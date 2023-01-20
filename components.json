@@ -1,0 +1,107 @@
+[
+    {
+        "Component": "confession",
+        "Content": {
+            "speaker": "All.",
+            "1": "Almighty and most merciful Father, we have erred and strayed from your ways like lost sheep. We have followed too much the devices and desires of our own hearts. We have broken your holy laws. We have left undone what we ought to have done, and we have done what we ought not to have done.",
+            "2": "O Lord, have mercy on us pitiful sinners.  Spare those, O God, who confess their faults. Restore those who truly repent, as you have promised through Jesus Christ our Lord. And grant, O merciful Father, for his sake, that we may live a godly, righteous and disciplined life, to the praise of your holy name. Amen."
+        }
+    },
+    {
+        "Component": "assurance",
+        "Content": {
+            "speaker": "Minister.",
+            "1": "Almighty God, the Father of our Lord Jesus Christ, does not desire the death of sinners but rather that they should turn from their wickedness and live. He has commanded and authorised his ministers to reassure his people that they will be forgiven when they repent of their sins. God pardons and forgives all who truly repent and sincerely believe his holy gospel.",
+            "2": "Therefore let us beseech him to grant us true repentance and his Holy Spirit; so that what we do now may please him, that the rest of our lives may be pure and holy, and that finally we may come to his eternal joy; through Jesus Christ our Lord. Amen."
+        }
+    },
+    {
+        "Component": "lords_prayer",
+        "Content": {
+            "speaker": "All.",
+            "1": "Our Father in heaven, hallowed be your name, your kingdom come, your will be done, on earth as it is in heaven.\nGive us today our daily bread.\nForgive us our sins as we forgive those who sin against us.\nLead us not into temptation but deliver us from evil.\nFor yours is the kingdom, the power and the glory, now and for ever. Amen."
+        }
+    },
+    {
+        "Component": "apostles_creed",
+        "Content": {
+            "speaker": "All.",
+            "1": "I believe in God, the Father Almighty, Creator of heaven and earth.\n\nI believe in Jesus Christ, his only Son our Lord. He was conceived by the Holy Spirit and born of the virgin Mary.\n\nHe suffered under Pontius Pilate, was crucified, died, and was buried. He descended to the dead.",
+            "2": "On the third day he rose again.\nHe ascended into heaven,\nand sits at the right hand of the Father.\nFrom there he shall come again to judge the living and the dead.\n\nI believe in the Holy Spirit, the holy catholic church, the communion of saints, the forgiveness of sins, the resurrection of the body, and the life everlasting. Amen."
+        }
+    },
+    {
+        "Component": "the_grace",
+        "Content": {
+            "speaker": "All.",
+            "1": "The grace of the Lord Jesus Christ and the love of God and the fellowship of the Holy Spirit be with us all, evermore. Amen"
+        }
+    },
+    {
+        "Component": "communion",
+        "Content": [
+            {
+                "Component": "confession",
+                "Content": {
+                    "speaker": "All.",
+                    "1": "Almighty God, Father of our Lord Jesus Christ, Maker of all things, Judge of all people;  We acknowledge and bewail our manifold sins and wickedness,\nWhich we, from time to time, most grievously have committed, By thought, word, and deed, Against thy Divine Majesty, Provoking most justly thy wrath and indignation against us.",
+                    "2": "We do earnestly repent,\nAnd are heartily sorry for these our misdoings;\nThe remembrance of them is grievous unto us; The burden of them is intolerable.\nHave mercy upon us, Have mercy upon us, most merciful Father;\nFor your Son our Lord Jesus Christ\u2019s sake,\nForgive us all that is past;",
+                    "3": "And grant that we may ever hereafter serve and please you in newness of life,\nTo the honour and glory of your Name;\nThrough Jesus Christ our Lord.  Amen."
+                }
+            },
+            {
+                "Component": "assurance",
+                "Content": {
+                    "speaker": "Minister.",
+                    "1": "Almighty God, our heavenly Father,\nwho of his great mercy has promised forgiveness of sins to all them that with hearty repentance and true faith turn unto him; Have mercy upon you; pardon and deliver you from all your sins; confirm and strengthen you in all goodness; and bring you to everlasting life; through Jesus Christ \tour Lord.  Amen."
+                }
+            },
+            {
+                "Component": "comfortable_words",
+                "Content": {
+                    "speaker": "Minister.",
+                    "1": [
+                        "Hear what comfortable words our Saviour Christ says to all that truly turn to him.",
+                        "Come unto me all that travail and are heavy laden, and I will refresh you.",
+                        "Matthew 11:28."
+                    ],
+                    "2": [
+                        "So God loved the world, that he gave his only-begotten Son,",
+                        "to the end that all that believe in him should not perish, but have everlasting life.",
+                        "John 3. 16."
+                    ],
+                    "3": [
+                        "Hear also what Saint Paul says.",
+                        "This is a true saying, and worthy of all people to be received,",
+                        "That Christ Jesus came into the world to save sinners.",
+                        "1 Timothy 1:15."
+                    ],
+                    "4": [
+                        "Hear also what Saint John says.",
+                        "If anyone sin, we have an Advocate with the Father, Jesus Christ the righteous; and he is the propitiation for our sins.",
+                        "1 John 2:1"
+                    ]
+                }
+            },
+            {
+                "Component": "humble_access",
+                "Content": {
+                    "speaker": "All.",
+                    "1": "We do not presume to come to this thy Table, O merciful Lord, trusting in our own righteousness, but in your manifold and great mercies. We are not worthy so much as to gather up the crumbs under your Table. But you are the same Lord, whose property is always to have mercy:",
+                    "2": "Grant us therefore, gracious Lord, so to commemorate in this breaking of bread the death of thy dear Son Jesus Christ, that we may feed on him in our hearts by faith,\nand that we may evermore dwell in him, and he in us. Amen."
+                }
+            },
+            {
+                "Component": "consecration",
+                "Content": {
+                    "speaker": "Minister.",
+                    "1": "Almighty God, our heavenly Father,\nwho of your tender mercy didst give thine only Son Jesus Christ to suffer death upon the Cross for our redemption;\nwho made there by his one oblation of himself once offered a full, perfect, and sufficient sacrifice, oblation, and satisfaction, for the sins of the whole world;",
+                    "2": "and did institute, and in his holy Gospel command us to continue, a perpetual memory of that his precious death, until his coming again:\nHear us, O merciful Father, we most humbly beseech you; and grant that we receiving these your creatures of bread and wine,",
+                    "3": "according to your Son our Saviour Jesus Christ\u2019s holy institution,in remembrance of his death and passion,\nmay, after an heavenly and spiritual manner,\nbe partakers of his most blessed Body and Blood:",
+                    "4": "who, in the same night that he was betrayed, took Bread;\nand, when he had given thanks, he brake it,\nand gave it to his disciples, saying,\nTake, eat; this is my Body which  is given for you: Do this in remembrance of me.",
+                    "5": "Likewise after supper he took the Cup; and, when he had given thanks, he gave it to them, saying,\nDrink you all of this; for this is my Blood of the New Testament, which is shed for you and for many for the remission of sins:\nDo this, as often as you shall drink it, in remembrance of me. Amen."
+                }
+            }
+        ]
+    }
+]
