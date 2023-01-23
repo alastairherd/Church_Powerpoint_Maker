@@ -1,101 +1,43 @@
+from variables import *
 import re
 import re
 import json
-import html
+import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.util import Pt
 from pptx.enum.text import PP_ALIGN
+import os
 
-#############################################################
-## Creates the American to British ESV Dictionary
-list1 = [
-         "(\W)([Ss])avior(s)?(\W)",
-         "(\W)neighbor(s|ing)?(\W)",
-         "(\W)favor(able|ite|s|ed|itism)?(\W)",
-         "(\W)Favor(\W)",
-         "(\W)labor(ed|s)?(\W)",
-         "(\W)(vap|vig)or(\W)",
-         "(\W)clamor(\W)",
-         "(\W)([Ss])plendor(\W)",
-         "(\W)color(s|ed)?(\W)",
-         "(\W)([Hh])onor(s|able|ing|ed)?(\W)",
-         "(\W)dishonor(s|able|ing|ed)?(\W)",
-         "(\W)travel(ed|er|ers|ing)(\W)",
-         "(\W)marvel(ous|ously|ed|ing)(\W)",
-         "(\W)([Cc])ounsel(or|ors|ed)(\W)",
-         "(\W)plow(s|ed|ers|ing|man|men|share|shares)?(\W)",
-         "(\W)judgment(s)?(\W)",
-         "(\W)(recogn|[Rr]eal|[Oo]rgan|[Ss]ymbol|bapt|critic|apolog|sympath)iz(e|ed|es|ing)?(\W)",
-         "(\W)(un)?authorized(\W)",
-         "(\W)(centi)?meters(\W)",
-         "(\W)liter(s)?(\W)",
-         "(\W)scepter(s)?(\W)",
-         "(\W)worship(ed|er|ers|ing)(\W)",
-         "(\W)quarrel(ed|ing)(\W)",
-         "(\W)benefited(\W)",
-         "(\W)signaled(\W)",
-         "(\W)paralyzed(\W)",
-         "(\W)fulfill(s|ment)?(\W)",
-         "(\W)skillful(ly)?(\W)",
-         "(\W)jewelry(\W)",
-         "(\W)(De|de|of)fense(s|less)?(\W)",
-         "(\W)([Ss])ulfur?(\W)"
-    ]
 
-list2 = [
-        r'\1\2aviour\3\4',
-        r'\1neighbour\2\3',
-        r'\1favour\2\3',
-        r'\1Favour\2',
-        r'\1labour\2\3',
-        r'\1\2our\3',
-        r'\1clamour\2',
-        r'\1\2plendour\3',
-        r'\1colour\2\3',
-        r'\1\2onour\3\4',
-        r'\1dishonour\2\3',
-        r'\1travell\2\3',
-        r'\1marvell\2\3',
-        r'\1\2ounsell\3\4',
-        r'\1plough\2\3',
-        r'\1judgement\2\3',
-        r'\1\2is\3\4',
-        r'\1\2authorised\3',
-        r'\1\2metres\3',
-        r'\1litre\2\3',
-        r'\1sceptre\2\3',
-        r'\1worshipp\2\3',
-        r'\1quarrell\2\3',
-        r'\1benefitted\2',
-        r'\1signalled\2',
-        r'\1paralysed\2',
-        r'\1fulfil\2\3',
-        r'\1skilful\2\3',
-        r'\1jewellery\2',
-        r'\1\2fence\3\4',
-        r'\1\2ulphur\3'
-    ]
-#############################################################
-
+## Set correct working directory
+script_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(script_dir)
 
 ##############################################################
 ## Data Loading Section
 
-## Generates list to use in below function
-anglo_list = list(zip(list1, list2))
+# ## Need to convert to function
+# def create_json_var(name):
+#     with open(f"{name}.json", "r") as f:
+#         value = json.load(f)
+#         globals()[name + "_json"] = value
 
-## Need to convert to function
-def create_json_var(name):
-    with open(f"{name}.json", "r") as f:
-        value = json.load(f)
-        globals()[name + "_json"] = value
+# create_json_var("components")
+# create_json_var("psalms")
+# create_json_var("wsc")
 
-create_json_var("components")
-create_json_var("psalms")
-create_json_var("wsc")
+with open("psalms.json", "r") as f:
+    psalms_json = json.load(f)
+
+with open("wsc.json", "r") as f:
+    wsc_json = json.load(f)
+
+with open("components.json", "r") as f:
+    components_json = json.load(f)
+
 
 API_KEY = 'ade14fe748fbb522b8dfb225ec6b222fa148cddc'
 API_URL = 'https://api.esv.org/v3/passage/text/'
@@ -334,137 +276,21 @@ def psalm_getter(psalm_name, psalms_json=psalms_json):
 psalm, meter, lst = psalm_getter(string, psalms_json)
 print(psalm,meter,lst)
 '''
+## variable creation
+df = pd.read_csv('https://docs.google.com/spreadsheets/d/e/2PACX-1vSIEtCzAWNJVZK7T1OEo1oGhnTib2bgFfdYRfFON1gpbG7LkHTFRJKSioV087Ys1oBZci80cRIRm0_u/pub?gid=0&single=true&output=csv')
 
-class SlideFill:
-    def __init__(self, slide):
-        self.slide = slide
-    
-    def fill_main(self, title, body, copy):
-        for idx, placeholder in enumerate(self.slide.placeholders):
-            try:
-                placeholder.text_frame.clear()
-                if idx == 0:
-                    new_body = title
-                elif idx == 1:
-                    new_body = body
-                elif idx == 2:
-                    new_body = copy
-                placeholder.text_frame.text = new_body
-            except:
-                pass
-    
-    def fill_component(self, title, body, address):
-        for idx, placeholder in enumerate(self.slide.placeholders):
-            try:
-                placeholder.text_frame.clear()
-                if idx == 0:
-                    placeholder.text_frame.text = title
-                elif idx == 1:
-                    p = placeholder.text_frame.add_paragraph()
-                    run = p.add_run()
-                    run.font.size = Pt(28)
-                    run.font.color.rgb = RGBColor(161, 38, 38)
-                    run.text = f"{address} "
-                    run = p.add_run()
-                    run.font.size = Pt(28)
-                    run.font.color.rgb = RGBColor(0, 0, 0)
-                    run.text = body    
-            except:
-                pass
-    
-    def fill_psalm(self, title, body, copy, meter):
-        for idx, placeholder in enumerate(self.slide.placeholders):
-            try:
-                placeholder.text_frame.clear()
-                if idx == 0:
-                    new_body = title
-                elif idx == 1:
-                    new_body = body
-                elif idx == 2:
-                    new_body = copy
-                elif idx == 3:
-                    new_body = meter
-                placeholder.text_frame.text = new_body
-            except:
-                pass
+cycle = df["Example Column"]
 
-def flag_format(flag):
-    try:
-        ## Such as 'notices' and 'song1'
-        if type(flag) == str:
-            return globals()[flag]
-        elif type(flag) == list:
-            try:
-                ## For 'component versions
-                if type(flag) == list:
-                    return component_assigner(flag[0])
-            except:
-                ## For 'call to worship'
-                return (globals()[flag[0]],flag[1])
-    except:
-        return "Error"
-
-def slide_maker(layout_type):
-    slide_layout = prs.slide_layouts[layout_type]
-    slide = prs.slides.add_slide(slide_layout)
-    return slide
-
-
-def slide_writer(flag):
-    # Populate the placeholders on the slide with data from variables
-    flag_val = flag_format(slide_dict[flag])
-
-    
-    if flag == 3:
-        slide = slide_maker(1)
-        # This works for call to worship
-        title = flag_val[1]
-        body = flag_val[0][0]
-        copy = flag_val[0][1]
-        SlideFill(slide).fill_main(title, body, copy)
-    elif flag in song_list:
-        # This works for psalms
-        try:
-            flag_val[0].find("Psalm") != -1
-            list_len = len(flag_val[2])
-            for i in range(0,list_len):
-                slide = slide_maker(3)
-                title = flag_val[0]
-                body = flag_val[2][i]
-                copy = f"Words: Sing Psalms! © 2003 Free Church of Scotland\nComposer: {psalm_tune[0]}\nTune: {psalm_tune[1]}\n©: Public Domain\nCCLI: 522221"
-                meter = f"Meter: {flag_val[1]}"
-                SlideFill(slide).fill_psalm(title, body, copy, meter)
-        except:
-            # This works for songs
-            try:
-                list_len = len(flag_val[0])
-                for i in range(0,list_len):
-                    slide = slide_maker(0)
-                    title = flag_val[1]
-                    body = flag_val[0][i]
-                    # Could put this outside the loop, in the future to only fill on the final slide
-                    copy = f"Words: {flag_val[2]}\nComposer: {flag_val[3]}\nTune: {flag_val[4]}\n©: {flag_val[5]}\nCCLI: 522221"
-                    SlideFill(slide).fill_main(title, body, copy)
-            except:
-                slide = slide_maker(0)
-                try:
-                    title = flag_val[1]
-                except:
-                    title = slide_dict[flag]
-                body = "Not in Public Domain"
-                try:
-                    copy = f"Words: {flag_val[2]}\nComposer: {flag_val[3]}\nTune: {flag_val[4]}\n©: {flag_val[5]}\nCCLI: 522221"
-                except:
-                    copy = "Error"
-                SlideFill(slide).fill_main(title, body, copy)
-                
-    elif flag in component_list:
-        # This works for components
-        list_len = len(flag_val[1])
-        for i in range(0,list_len):
-            slide = slide_maker(2)
-            title = slide_dict[flag][1]
-            address = flag_val[0]
-            body = flag_val[1][i]
-            SlideFill(slide).fill_component(title, body, address)
-    
+try:
+    call_to_worship = get_esv_text(cycle[1])
+    song1 = song_details(cycle[2], cycle[3])
+    ## (psalm, meter,lst)
+    psalm = psalm_getter(cycle[4])
+    first_reading = cycle[6]
+    catechism_reading = catechism_finder(cycle[7])
+    song2 = song_details(cycle[8], cycle[9])
+    second_reading = cycle[10]
+    song3 = song_details(cycle[11], cycle[12])
+    song4 = song_details(cycle[13], cycle[14])
+except:
+    pass
