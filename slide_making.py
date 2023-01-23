@@ -53,6 +53,20 @@ class SlideFill:
             except:
                 pass
 
+    def fill_reading(self,title,body):
+        for idx, placeholder in enumerate(self.slide.placeholders):
+            try:
+                placeholder.text_frame.clear()
+                if idx == 0:
+                    new_body = title
+                elif idx == 1:
+                    new_body = body
+                placeholder.text_frame.text = new_body
+            except:
+                pass
+
+############################################################################################################
+
 def flag_format(flag):
     try:
         ## Such as 'notices' and 'song1'
@@ -67,7 +81,7 @@ def flag_format(flag):
                 ## For 'call to worship'
                 return (globals()[flag[0]],flag[1])
     except:
-        return "Error"
+        return "Not found"
 
 def slide_maker(layout_type, prs):
     slide_layout = prs.slide_layouts[layout_type]
@@ -87,7 +101,11 @@ def slide_writer(flag, prs):
         body = flag_val[0][0]
         copy = flag_val[0][1]
         SlideFill(slide).fill_main(title, body, copy)
-    elif flag in song_list:
+    
+    elif slide_dict[flag] == "goodbye":
+        slide = slide_maker(7, prs)
+
+    elif flag in song_list and flag_val != "Not found":
         # This works for psalms
         try:
             flag_val[0].find("Psalm") != -1
@@ -133,3 +151,21 @@ def slide_writer(flag, prs):
             body = flag_val[1][i]
             SlideFill(slide).fill_component(title, body, address)
     
+    elif flag in reading_list:
+        title = flag_val[1]
+        body = f"{flag_val[0]}\n\npg. X"
+        slide = slide_maker(4, prs)
+        SlideFill(slide).fill_reading(title, body)
+
+    elif flag in catechism_list:
+        title = f"Westminster Shorter Catechism {flag_val[2]}"
+        question = f"\n\n{flag_val[1]}"
+        answer = f"{flag_val[0]}"
+        slide = slide_maker(5, prs)
+        SlideFill(slide).fill_component(title, question, answer)
+
+    elif "prayer" in slide_dict[flag][0]:
+        title = slide_dict[flag][1]
+        body = ""
+        slide = slide_maker(4, prs)
+        SlideFill(slide).fill_reading(title, body)

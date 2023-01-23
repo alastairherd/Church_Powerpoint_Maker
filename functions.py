@@ -1,6 +1,5 @@
 from variables import *
 import re
-import re
 import json
 import pandas as pd
 import requests
@@ -9,12 +8,6 @@ from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.util import Pt
 from pptx.enum.text import PP_ALIGN
-import os
-
-
-## Set correct working directory
-script_dir = os.path.dirname(os.path.abspath(__file__))
-os.chdir(script_dir)
   
 ## Extracts the relevant details from the components JSON
 def component_assigner(val, flag = None):
@@ -39,7 +32,10 @@ And returns the text for each slide, in a list, with the content for each slide 
 
 ## Function to extract the appropriate catechism question
 def catechism_finder(val):
-    real_val = int(val) - 1
+    # if val is not int cast to int
+    if type(val) != int:
+        val = int(val)
+    real_val = val - 1
     question = wsc_json['Data'][real_val]["Question"]
     answer = wsc_json['Data'][real_val]["Answer"]
     return (question,answer, val)
@@ -189,12 +185,26 @@ def tune_details(url2):
     scraper.tune_details()
     return scraper.get_tune()
 
+
 # function to convert to superscript
 def get_super(x):
-    normal = "0123456789"
-    super_s = "⁰¹²³⁴⁵⁶⁷⁸⁹"
+    normal = "0123456789-"
+    super_s = "⁰¹²³⁴⁵⁶⁷⁸⁹⁻"
     res = x.maketrans(''.join(normal), ''.join(super_s))
     return x.translate(res)
+
+def super_psalm(text):
+    # Regular expression to match numbers or numbers with dashes between, but not if they have a space on both sides
+    pattern = r"(\d+\-?\d*)(?=[^\s\d])"
+    def get_super(x):
+        normal = "0123456789-"
+        super_s = "⁰¹²³⁴⁵⁶⁷⁸⁹⁻"
+        res = x.maketrans(''.join(normal), ''.join(super_s))
+        return x.translate(res)
+    # Use re.sub to replace the matched numbers with superscript format
+    text = re.sub(pattern, lambda x: get_super(x.group()), text)
+    return text
+
 
 def psalm_getter(psalm_name, psalms_json=psalms_json):
     
@@ -233,7 +243,7 @@ def psalm_getter(psalm_name, psalms_json=psalms_json):
         except:
             pass
 
-    lst = list(map(get_super,lst))
+    lst = list(map(super_psalm,lst))
 
     return (psalm_name, meter,lst)
 
@@ -255,11 +265,16 @@ try:
     song1 = song_details(cycle[2], cycle[3])
     ## (psalm, meter,lst)
     psalm = psalm_getter(cycle[4])
+    psalm_tune = tune_details(cycle[5])
     first_reading = cycle[6]
-    catechism_reading = catechism_finder(cycle[7])
+    catechism_reading_today = catechism_finder(cycle[7])
+    catechism_reading_previous = catechism_finder(int(cycle[7])-1)
     song2 = song_details(cycle[8], cycle[9])
     second_reading = cycle[10]
     song3 = song_details(cycle[11], cycle[12])
-    song4 = song_details(cycle[13], cycle[14])
+    try:
+        song4 = song_details(cycle[13], cycle[14])
+    except:
+        pass
 except:
     pass

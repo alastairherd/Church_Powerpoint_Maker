@@ -1,11 +1,7 @@
 from slide_making import *
-import pandas as pd
 from pptx import Presentation
 
-# print(f"Words: {author}\nTune: {tune}\nComposer: {composer}\n©: {copyr}\nCCLI: 522221")
-
-
-template_file = 'Presentation1.pptx'
+template_file = 'template.pptx'
 
 # Open the template file
 # Create new class instance (prs)
@@ -13,7 +9,7 @@ prs = Presentation(template_file)
 
 
 ## Currently trying to sort out adding catechism pages
-for i in range (3,15):
+for i in range (1,23):
     try:
         print(i)
         slide_writer(i, prs)
@@ -24,3 +20,20 @@ for i in range (3,15):
 
 # Save the PowerPoint file
 prs.save('example_from_template.pptx')
+
+'''
+Sub html_fixer()
+    Dim sld As Slide
+    For Each sld In ActivePresentation.Slides
+        Dim shp As Shape
+        For Each shp In sld.Shapes
+            If shp.HasTextFrame Then
+                If shp.TextFrame.HasText Then
+                    shp.TextFrame.TextRange.Text = Replace(shp.TextFrame.TextRange.Text, "_x000D_", "")
+                End If
+            End If
+        Next shp
+    Next sld
+End Sub
+
+'''
