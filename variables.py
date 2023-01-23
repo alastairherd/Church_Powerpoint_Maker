@@ -1,3 +1,5 @@
+import json
+
 #############################################################
 ## Creates the American to British ESV Dictionary
 list1 = [
@@ -109,3 +111,29 @@ for elem in slide_dict:
             reading_list.append(elem)
         elif slide_dict[elem][0] not in ['call_to_worship']:
             component_list.append(elem)
+
+# def create_json_var(name):
+#     with open(f"{name}.json", "r") as f:
+#         value = json.load(f)
+#         globals()[name + "_json"] = value
+
+# create_json_var("components")
+# create_json_var("psalms")
+# create_json_var("wsc")
+
+### Load in json files
+with open("psalms.json", "r") as f:
+    psalms_json = json.load(f)
+
+with open("wsc.json", "r") as f:
+    wsc_json = json.load(f)
+
+with open("components.json", "r") as f:
+    components_json = json.load(f)
+
+## ESV API keys
+API_KEY = 'ade14fe748fbb522b8dfb225ec6b222fa148cddc'
+API_URL = 'https://api.esv.org/v3/passage/text/'
+
+## Used to get the readings from the google sheet
+online_csv = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSIEtCzAWNJVZK7T1OEo1oGhnTib2bgFfdYRfFON1gpbG7LkHTFRJKSioV087Ys1oBZci80cRIRm0_u/pub?gid=0&single=true&output=csv'

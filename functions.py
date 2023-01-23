@@ -15,33 +15,6 @@ import os
 ## Set correct working directory
 script_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(script_dir)
-
-##############################################################
-## Data Loading Section
-
-# ## Need to convert to function
-# def create_json_var(name):
-#     with open(f"{name}.json", "r") as f:
-#         value = json.load(f)
-#         globals()[name + "_json"] = value
-
-# create_json_var("components")
-# create_json_var("psalms")
-# create_json_var("wsc")
-
-with open("psalms.json", "r") as f:
-    psalms_json = json.load(f)
-
-with open("wsc.json", "r") as f:
-    wsc_json = json.load(f)
-
-with open("components.json", "r") as f:
-    components_json = json.load(f)
-
-
-API_KEY = 'ade14fe748fbb522b8dfb225ec6b222fa148cddc'
-API_URL = 'https://api.esv.org/v3/passage/text/'
-##############################################################
   
 ## Extracts the relevant details from the components JSON
 def component_assigner(val, flag = None):
@@ -116,11 +89,6 @@ def get_esv_text(passage):
     return (result,passage)
   else:
     return 'Error: Passage not found'
-
-'''  
-result = get_esv_text("John 3:16-19")
-print(result)
-'''
 
 ## Hymn Scraper Class
 class HymnScraper:
@@ -276,8 +244,9 @@ def psalm_getter(psalm_name, psalms_json=psalms_json):
 psalm, meter, lst = psalm_getter(string, psalms_json)
 print(psalm,meter,lst)
 '''
-## variable creation
-df = pd.read_csv('https://docs.google.com/spreadsheets/d/e/2PACX-1vSIEtCzAWNJVZK7T1OEo1oGhnTib2bgFfdYRfFON1gpbG7LkHTFRJKSioV087Ys1oBZci80cRIRm0_u/pub?gid=0&single=true&output=csv')
+## Creates all the variables that we want to use in the template
+## Using the dataframe we feed in the cycle number
+df = pd.read_csv(online_csv)
 
 cycle = df["Example Column"]
 
