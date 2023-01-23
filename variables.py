@@ -1,4 +1,9 @@
 import json
+import os
+
+## Set correct working directory
+script_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(script_dir)
 
 #############################################################
 ## Creates the American to British ESV Dictionary
@@ -76,7 +81,7 @@ anglo_list = list(zip(list1, list2))
 
 # If value is a list, then use second value as slide title
 slide_dict = {
-    2: "Notices",
+    2: "notices",
     3: ["call_to_worship","Call to worship"],
     4: "song1",
     5: ["confession","Confession"],
@@ -84,15 +89,16 @@ slide_dict = {
     7: ["lords_prayer","The Lord's Prayer"],
     8: "psalm",
     9: ["first_reading","First Reading"],
-    10: "catechism_reading",
-    11: "song2",
-    12: ["second_reading","Second Reading"],
-    13: ["apostles_creed","Apostles' Creed (180 AD)"],
-    14: ["Prayers","Prayers of Intercession"],
-    15: "song3",
-    16: "song4",
-    17: ["the_grace","The Grace"],
-    18: "Goodbye"
+    10: "catechism_reading_previous",
+    11: "catechism_reading_today",
+    12: "song2",
+    13: ["second_reading","Second Reading"],
+    14: ["apostles_creed","Apostles' Creed (180 AD)"],
+    15: ["prayers","Prayers of Intercession"],
+    16: "song3",
+    17: "song4",
+    18: ["the_grace","The Grace"],
+    19: "goodbye"
 }
 
 # Make a dictionary of the keys where slide_dict value starts with "song" or "psalm", some values are lists, so need to check for that
@@ -109,17 +115,8 @@ for elem in slide_dict:
     elif type(slide_dict[elem]) == list:
         if "reading" in slide_dict[elem][0]:
             reading_list.append(elem)
-        elif slide_dict[elem][0] not in ['call_to_worship']:
+        elif slide_dict[elem][0] not in ['call_to_worship'] and slide_dict[elem][0] not in ['prayers']:
             component_list.append(elem)
-
-# def create_json_var(name):
-#     with open(f"{name}.json", "r") as f:
-#         value = json.load(f)
-#         globals()[name + "_json"] = value
-
-# create_json_var("components")
-# create_json_var("psalms")
-# create_json_var("wsc")
 
 ### Load in json files
 with open("psalms.json", "r") as f:
