@@ -2,7 +2,6 @@ import json
 import os
 from pptx import Presentation
 import re
-import json
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
