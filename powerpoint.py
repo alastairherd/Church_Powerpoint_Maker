@@ -20,20 +20,3 @@ for i in range (1,23):
 
 # Save the PowerPoint file
 prs.save('example_from_template.pptx')
-
-'''
-Sub html_fixer()
-    Dim sld As Slide
-    For Each sld In ActivePresentation.Slides
-        Dim shp As Shape
-        For Each shp In sld.Shapes
-            If shp.HasTextFrame Then
-                If shp.TextFrame.HasText Then
-                    shp.TextFrame.TextRange.Text = Replace(shp.TextFrame.TextRange.Text, "_x000D_", "")
-                End If
-            End If
-        Next shp
-    Next sld
-End Sub
-
-'''
