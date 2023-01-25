@@ -106,7 +106,7 @@ class HymnScraper:
         try:
             self.title = soup.find("span", class_="hy_infoLabel", string="Title:").find_next().text
         except:
-            None
+            self.title = 'Unable to find'
         try:
             self.author = soup.find("span", class_="hy_infoLabel", string="Author:").find_next().text
         except:
@@ -114,18 +114,19 @@ class HymnScraper:
                 self.author = soup.find("span", class_="hy_infoLabel", string="Author (attributed to):").find_next().text
                 self.author = self.author + " (atrb)"
             except:
-                self.author = None
+                self.author = 'Unable to find'
         try:
             self.copyr = soup.find("span", class_="hy_infoLabel", string="Copyright:").find_next().text
         except:
-            self.copyr = None
+            self.copyr = 'Unable to find'
 
         try:
             body_text = soup.select_one('div#at_fulltext.authority_section div div.authority_columns')
             paragraphs = body_text.find_all('p')
             verses = []
             for p in paragraphs:
-                verses.append(p.text)
+                val = p.text.replace("\r","")
+                verses.append(val)
 
             self.n_verses = []
             for item in verses:
@@ -142,7 +143,7 @@ class HymnScraper:
                     refrain = item.split(":")[1] + "\n"
                     self.n_verses.append(refrain)
         except:
-            self.n_verses = None
+            self.n_verses = ["Unable to find"]
 
     def tune_details(self):
         ## Tune Extraction
@@ -159,11 +160,11 @@ class HymnScraper:
         try:
             self.tune = soup.find("span", class_="hy_infoLabel", string="Title:").find_next().text
         except:
-            self.tune = None
+            self.tune = 'Unable to find'
         try:
             self.meter = soup.find("span", class_="hy_infoLabel", string="Meter:").find_next().text
         except:
-            self.meter = None
+            self.meter = 'Unable to find'
 
 
     def get_lyrics(self):
@@ -258,7 +259,7 @@ print(psalm,meter,lst)
 ## Using the dataframe we feed in the cycle number
 df = pd.read_csv(online_csv)
 
-cycle = df["Example Column"]
+cycle = df["Service Column"]
 
 try:
     call_to_worship = get_esv_text(cycle[1])
