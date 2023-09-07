@@ -85,8 +85,7 @@ def flag_format(flag):
 
 def slide_maker(layout_type, prs):
     slide_layout = prs.slide_layouts[layout_type]
-    slide = prs.slides.add_slide(slide_layout)
-    return slide
+    return prs.slides.add_slide(slide_layout)
 
 
 def slide_writer(flag, prs):
