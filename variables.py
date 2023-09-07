@@ -106,18 +106,17 @@ song_list = []
 component_list = []
 reading_list = []
 catechism_list = []
-for elem in slide_dict:
-    if type(slide_dict[elem]) != list:
-        if slide_dict[elem].startswith("song") or slide_dict[elem].startswith("psalm"):
-            song_list.append(elem)
-        elif slide_dict[elem].startswith("catechism"):
-            catechism_list.append(elem)
-    elif type(slide_dict[elem]) == list:
+for elem, value in slide_dict.items():
+    if type(value) == list:
         if "reading" in slide_dict[elem][0]:
             reading_list.append(elem)
-        elif slide_dict[elem][0] not in ['call_to_worship'] and slide_dict[elem][0] not in ['prayers']:
+        elif slide_dict[elem][0] not in ['call_to_worship', 'prayers']:
             component_list.append(elem)
 
+    elif slide_dict[elem].startswith("song") or slide_dict[elem].startswith("psalm"):
+        song_list.append(elem)
+    elif slide_dict[elem].startswith("catechism"):
+        catechism_list.append(elem)
 ### Load in json files
 with open("psalms.json", "r") as f:
     psalms_json = json.load(f)

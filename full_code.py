@@ -122,18 +122,17 @@ song_list = []
 component_list = []
 reading_list = []
 catechism_list = []
-for elem in slide_dict:
-    if type(slide_dict[elem]) != list:
-        if slide_dict[elem].startswith("song") or slide_dict[elem].startswith("psalm"):
-            song_list.append(elem)
-        elif slide_dict[elem].startswith("catechism"):
-            catechism_list.append(elem)
-    elif type(slide_dict[elem]) == list:
+for elem, value in slide_dict.items():
+    if type(value) == list:
         if "reading" in slide_dict[elem][0]:
             reading_list.append(elem)
-        elif slide_dict[elem][0] not in ['call_to_worship'] and slide_dict[elem][0] not in ['prayers']:
+        elif slide_dict[elem][0] not in ['call_to_worship', 'prayers']:
             component_list.append(elem)
 
+    elif slide_dict[elem].startswith("song") or slide_dict[elem].startswith("psalm"):
+        song_list.append(elem)
+    elif slide_dict[elem].startswith("catechism"):
+        catechism_list.append(elem)
 ### Load in json files
 with open("psalms.json", "r") as f:
     psalms_json = json.load(f)
@@ -208,31 +207,26 @@ def super_verse(text):
 
 ## ESV API to return text from passage text
 def get_esv_text(passage):
-  params = {
-    'q': passage,
-    'include-headings': False,
-    'include-footnotes': False,
-    'include-verse-numbers': True,
-    'include-short-copyright': False,
-    'include-passage-references': False
-  }
-  
-  headers = {
-    'Authorization': 'Token %s' % API_KEY
-  }
-  
-  response = requests.get(API_URL, params=params, headers=headers)
-  
-  passages = response.json()['passages']
+    params = {
+      'q': passage,
+      'include-headings': False,
+      'include-footnotes': False,
+      'include-verse-numbers': True,
+      'include-short-copyright': False,
+      'include-passage-references': False
+    }
 
-  result = passages[0].strip()
-  result = super_verse(result)
-  result = replace_text(result)
-  
-  if passages:
-    return (result,passage)
-  else:
-    return 'Error: Passage not found'
+    headers = {'Authorization': f'Token {API_KEY}'}
+
+    response = requests.get(API_URL, params=params, headers=headers)
+
+    passages = response.json()['passages']
+
+    result = passages[0].strip()
+    result = super_verse(result)
+    result = replace_text(result)
+
+    return (result, passage) if passages else 'Error: Passage not found'
 
 ## Hymn Scraper Class
 class HymnScraper:
@@ -357,19 +351,14 @@ def super_psalm(text):
 
 def psalm_getter(psalm_name, psalms_json=psalms_json):
     
-    match = re.search(r"^(Psalm )?(\d{1,3})(:(([1-9]\d{0,2})-([1-9]\d{0,2})))?(\s\(([a-zA-Z])\))?(\s\((\d{0,2})\))?$", psalm_name)
-
-    if match:
+    if match := re.search(
+        r"^(Psalm )?(\d{1,3})(:(([1-9]\d{0,2})-([1-9]\d{0,2})))?(\s\(([a-zA-Z])\))?(\s\((\d{0,2})\))?$",
+        psalm_name,
+    ):
         if match.group(2):
             psalm = match.group(2)
-        if match.group(7):
-            version = match.group(8)
-        else:
-            version = "a"
-        if match.group(9):
-            section = match.group(10)
-        else:
-            section = None
+        version = match.group(8) if match.group(7) else "a"
+        section = match.group(10) if match.group(9) else None
         if match.group(4):
             verses = match.group(4)
         elif section != None:
@@ -377,7 +366,7 @@ def psalm_getter(psalm_name, psalms_json=psalms_json):
         else:
             verses = "1-30"
 
-    if section == None:
+    if section is None:
         body = [d for d in psalms_json if d["Psalm"] == str(psalm) and d["Content"]["Version"] == version][0]['Content']['Body']
         meter = [d for d in psalms_json if d["Psalm"] == str(psalm) and d["Content"]["Version"] == version][0]['Content']['Meter']
     else:
@@ -519,8 +508,7 @@ def flag_format(flag):
 
 def slide_maker(layout_type, prs):
     slide_layout = prs.slide_layouts[layout_type]
-    slide = prs.slides.add_slide(slide_layout)
-    return slide
+    return prs.slides.add_slide(slide_layout)
 
 
 def slide_writer(flag, prs):
