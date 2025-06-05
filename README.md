@@ -18,6 +18,21 @@ This is a nice and simple script that runs the previous scripts. It imports the 
 
 Then it saves the newly named powerpoint at the end.
 
+### Setup
+Install the required dependencies with:
+
+```bash
+pip install -r requirements.txt
+```
+
+The ESV API credentials should be supplied via environment variables so that
+they are not committed to version control:
+
+```bash
+export ESV_API_KEY="your-api-key"
+export ESV_API_URL="https://api.esv.org/v3/passage/text/"  # optional
+```
+
 #### JSON Files
 There are several JSON files that are used in this script:
 1. psalms.json
@@ -27,3 +42,4 @@ There are several JSON files that are used in this script:
 3. wsc.json
    - This comes from the "A Puritians Mind" website
    - Citations are in the file
+

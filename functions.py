@@ -1,4 +1,4 @@
-from variables import *
+import variables as var
 import re
 import json
 import pandas as pd
@@ -8,6 +8,19 @@ from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.util import Pt
 from pptx.enum.text import PP_ALIGN
+
+# Expose frequently used variables from the variables module
+slide_dict = var.slide_dict
+song_list = var.song_list
+component_list = var.component_list
+reading_list = var.reading_list
+catechism_list = var.catechism_list
+psalms_json = var.psalms_json
+wsc_json = var.wsc_json
+components_json = var.components_json
+API_KEY = var.API_KEY
+API_URL = var.API_URL
+online_csv = var.online_csv
   
 ## Extracts the relevant details from the components JSON
 def component_assigner(val, flag = None):
@@ -275,7 +288,7 @@ try:
     song3 = song_details(cycle[11], cycle[12])
     try:
         song4 = song_details(cycle[13], cycle[14])
-    except:
+    except Exception:
         pass
-except:
+except Exception:
     pass
