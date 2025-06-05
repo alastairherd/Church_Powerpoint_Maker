@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.pptx
+!template.pptx
+!example_from_template.pptx
+.ipynb_checkpoints/
