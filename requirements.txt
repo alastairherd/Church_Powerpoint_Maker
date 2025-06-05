@@ -3,3 +3,4 @@ pandas
 python-pptx
 requests
 
+pytest
