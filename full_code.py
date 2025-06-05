@@ -5,7 +5,6 @@ import re
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.util import Pt
 from pptx.enum.text import PP_ALIGN
@@ -648,3 +647,4 @@ input("Press enter to exit")
 
 ### To create the exe version of this file run this command in the terminal
 ### pyinstaller --onefile --add-data "template.pptx;." --add-data "components.json;." --add-data "psalms.json;." --add-data "wsc.json;." full_code.py
+

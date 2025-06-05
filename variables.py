@@ -129,8 +129,10 @@ with open("components.json", "r") as f:
     components_json = json.load(f)
 
 ## ESV API keys
-API_KEY = ''
-API_URL = 'https://api.esv.org/v3/passage/text/'
+# Load credentials from environment variables to avoid
+# committing secrets into version control.
+API_KEY = os.getenv("ESV_API_KEY", "")
+API_URL = os.getenv("ESV_API_URL", "https://api.esv.org/v3/passage/text/")
 
 ## Used to get the readings from the google sheet
 online_csv = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSIEtCzAWNJVZK7T1OEo1oGhnTib2bgFfdYRfFON1gpbG7LkHTFRJKSioV087Ys1oBZci80cRIRm0_u/pub?gid=0&single=true&output=csv'
