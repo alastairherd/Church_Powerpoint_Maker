@@ -1,0 +1,7 @@
+target/
+__pycache__/
+*.pyc
+.git/
+.ipynb_checkpoints/
+out.pptx
+.env.local

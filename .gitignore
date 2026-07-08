@@ -4,3 +4,5 @@ __pycache__/
 !template.pptx
 !example_from_template.pptx
 .ipynb_checkpoints/
+target/
+.env.local
