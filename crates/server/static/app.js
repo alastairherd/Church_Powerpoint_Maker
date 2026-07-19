@@ -60,7 +60,7 @@ function headingOf(component) {
 
 function detailOf(component) {
   switch (component.type) {
-    case 'song': return component.song ? `Library version ${component.song.version}` : 'Song choice needed';
+    case 'song': return component.song ? `Library v${component.song.version} · ${component.song.slide_count || 1} slides` : 'Song choice needed';
     case 'psalm': return component.reference || 'Passage needed';
     case 'reading': return component.reference || 'Reference needed';
     case 'call_to_worship': return component.reference || 'Reference needed';
@@ -72,7 +72,7 @@ function detailOf(component) {
 
 function estimatedSlides(component) {
   if (component.type === 'notices') return Math.max(1, Math.ceil(component.rows.length / 5));
-  if (component.type === 'song') return Math.max(1, component.lyric_slides.length);
+  if (component.type === 'song') return Math.max(1, component.song?.slide_count || component.lyric_slides.length);
   if (component.type === 'psalm') return Math.max(1, component.slide_breaks.length);
   if (component.type === 'custom_text_image') return Math.max(1, component.slides.length);
   if (component.type === 'liturgy_block') return Math.max(1, (component.text || '').split(/\n\s*\n/).filter(Boolean).length);
@@ -277,9 +277,73 @@ function renderCallFields(fields, component) {
 }
 
 function renderSongFields(fields, component) {
-  fields.append(textField('Song title', component.title, value => component.title = value, 'Searchable library selection will pin an exact version.'));
-  renderSlideBlocks(fields, component.lyric_slides, 'Lyric slide', () => changed());
-  fields.append(textArea('Credits', component.credits, value => component.credits = value, 'Shown on the final lyric slide. CCLI licence 522221 is added automatically.'));
+  const picker = document.createElement('section');
+  picker.className = 'song-picker';
+  const pickerHeading = document.createElement('div'); pickerHeading.className = 'song-picker-heading';
+  const pickerTitle = document.createElement('h3'); pickerTitle.textContent = 'Choose from the song library';
+  const libraryLink = document.createElement('a'); libraryLink.href = '/library'; libraryLink.textContent = 'Browse full library';
+  pickerHeading.append(pickerTitle, libraryLink); picker.append(pickerHeading);
+
+  if (component.song) {
+    const selected = document.createElement('div'); selected.className = 'selected-song';
+    const copy = document.createElement('div');
+    const title = document.createElement('strong'); title.textContent = component.title;
+    const detail = document.createElement('small'); detail.textContent = `Version ${component.song.version} · ${component.song.slide_count || 1} slides`;
+    copy.append(title, detail);
+    const clear = button('Change song', 'button button-secondary');
+    clear.addEventListener('click', () => { component.song = null; component.title = ''; changed(); });
+    selected.append(copy, clear); picker.append(selected);
+  }
+
+  const searchLabel = document.createElement('label'); searchLabel.textContent = component.song ? 'Search for a replacement' : 'Search library';
+  const searchInput = document.createElement('input');
+  searchInput.type = 'search'; searchInput.autocomplete = 'off'; searchInput.placeholder = 'Start typing a song title';
+  searchInput.setAttribute('role', 'combobox'); searchInput.setAttribute('aria-expanded', 'false');
+  const results = document.createElement('div'); results.className = 'song-picker-results'; results.setAttribute('role', 'listbox');
+  const status = document.createElement('p'); status.className = 'field-note song-search-status'; status.textContent = 'Type a title, or focus the field to browse all active songs.';
+  searchLabel.append(searchInput); picker.append(searchLabel, results, status); fields.append(picker);
+
+  let timer = null; let sequence = 0;
+  async function searchSongs() {
+    const current = ++sequence;
+    status.textContent = 'Searching library…'; searchInput.setAttribute('aria-expanded', 'true');
+    try {
+      const response = await request(`/api/songs?q=${encodeURIComponent(searchInput.value.trim())}`);
+      const songs = await response.json();
+      if (current !== sequence) return;
+      results.replaceChildren();
+      songs.slice(0, 14).forEach(song => {
+        const choice = document.createElement('button'); choice.type = 'button'; choice.className = 'song-choice'; choice.setAttribute('role', 'option');
+        const copy = document.createElement('span');
+        const title = document.createElement('strong'); title.textContent = song.title;
+        const detail = document.createElement('small'); detail.textContent = [song.variant_label, `v${song.current_version}`, `${song.slide_count} slides`].filter(Boolean).join(' · ');
+        copy.append(title, detail);
+        const use = document.createElement('span'); use.className = 'song-choice-action'; use.textContent = 'Select';
+        choice.append(copy, use);
+        choice.addEventListener('click', () => {
+          component.title = song.title;
+          component.song = { entity_id: song.id, version: song.current_version, slide_count: song.slide_count };
+          component.lyric_slides = [];
+          component.credits = '';
+          changed();
+        });
+        results.append(choice);
+      });
+      status.textContent = songs.length ? `${songs.length} match${songs.length === 1 ? '' : 'es'}${songs.length > 14 ? ', showing the first 14' : ''}.` : 'No matching songs. Try a shorter title or an alternative spelling.';
+      searchInput.setAttribute('aria-expanded', songs.length ? 'true' : 'false');
+    } catch (error) {
+      results.replaceChildren(); status.textContent = 'The song library could not be loaded.'; searchInput.setAttribute('aria-expanded', 'false'); showToast(error.message);
+    }
+  }
+  searchInput.addEventListener('focus', () => { if (!results.children.length) searchSongs(); });
+  searchInput.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(searchSongs, 260); });
+
+  if (!component.song) {
+    const divider = document.createElement('div'); divider.className = 'editor-divider'; divider.innerHTML = '<span>Or enter custom lyrics</span>'; fields.append(divider);
+    fields.append(textField('Song title', component.title, value => component.title = value, 'Required for custom lyric slides.'));
+    renderSlideBlocks(fields, component.lyric_slides, 'Lyric slide', () => changed());
+    fields.append(textArea('Credits', component.credits, value => component.credits = value, 'Shown on the final lyric slide. The global CCLI licence number is added automatically.'));
+  }
 }
 
 function renderPsalmFields(fields, component) {

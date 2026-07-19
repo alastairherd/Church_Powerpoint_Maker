@@ -1,10 +1,10 @@
-use crate::store::{PutCondition, StoredObject};
+use crate::store::{ObjectStore, PutCondition, StoredObject};
 use crate::{hex, new_id, put_json, AppError, AppState, StaffSession, PPTX_CONTENT_TYPE};
 use axum::body::{to_bytes, Body};
 use axum::extract::{Path, Query, State};
 use axum::{Extension, Json};
 use chrono::Utc;
-use deck_builder::{AuditMetadata, RightsStatus, SongRecord, SongVersion};
+use deck_builder::{AuditMetadata, RightsStatus, SongRecord, SongVersion, StoredSong};
 use http::HeaderMap;
 use pptx_template::Presentation;
 use serde::{Deserialize, Serialize};
@@ -25,12 +25,25 @@ pub(crate) async fn list(
 ) -> Result<Json<Vec<SongRecord>>, AppError> {
     let search = query.q.trim().to_lowercase();
     let mut songs = Vec::new();
-    for key in state.store.list("entities/songs/").await? {
-        if key.contains("/versions/") {
-            continue;
+    let keys = state
+        .store
+        .list("entities/songs/")
+        .await?
+        .into_iter()
+        .filter(|key| !key.contains("/versions/"))
+        .collect::<Vec<_>>();
+    for chunk in keys.chunks(12) {
+        let mut reads = tokio::task::JoinSet::new();
+        for key in chunk {
+            let store = state.store.clone();
+            let key = key.clone();
+            reads.spawn(async move { store.get(&key).await });
         }
-        let object = state.store.get(&key).await?;
-        if let Ok(song) = serde_json::from_slice::<SongRecord>(&object.bytes) {
+        while let Some(result) = reads.join_next().await {
+            let Ok(Ok(object)) = result else { continue };
+            let Ok(song) = serde_json::from_slice::<SongRecord>(&object.bytes) else {
+                continue;
+            };
             let matches = search.is_empty()
                 || song.title.to_lowercase().contains(&search)
                 || song
@@ -251,6 +264,50 @@ pub(crate) async fn preview(
         .await?;
     let version: LyricVersion = serde_json::from_slice(&object.bytes)?;
     Ok(Json(json!({ "song": song, "slides": version.slides })))
+}
+
+pub(crate) async fn resolve(
+    store: &dyn ObjectStore,
+    id: &str,
+    version: u64,
+) -> anyhow::Result<StoredSong> {
+    let metadata = store.get(&song_key(id)).await?;
+    let song: SongRecord = serde_json::from_slice(&metadata.bytes)?;
+    let credits = [
+        (!song.author_owner.trim().is_empty()).then(|| song.author_owner.trim().to_string()),
+        song.ccli_song_number
+            .as_ref()
+            .filter(|number| !number.trim().is_empty())
+            .map(|number| format!("CCLI Song No. {}", number.trim())),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ");
+
+    if let Ok(object) = store.get(&pptx_version_key(id, version)).await {
+        let record: SongVersion = serde_json::from_slice(&object.bytes)?;
+        let source = store.get(&record.object_key).await?;
+        return Ok(StoredSong {
+            title: song.title,
+            slides: record.extracted_text,
+            credits,
+            source_pptx: Some(source.bytes),
+        });
+    }
+
+    let object = store.get(&lyric_version_key(id, version)).await?;
+    let record: LyricVersion = serde_json::from_slice(&object.bytes)?;
+    Ok(StoredSong {
+        title: record.title,
+        slides: record.slides,
+        credits: if record.credits.trim().is_empty() {
+            credits
+        } else {
+            record.credits
+        },
+        source_pptx: None,
+    })
 }
 
 async fn load(state: &AppState, id: &str) -> Result<(SongRecord, StoredObject), AppError> {

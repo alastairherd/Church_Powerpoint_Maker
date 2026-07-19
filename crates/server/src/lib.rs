@@ -3,6 +3,7 @@ pub mod store;
 
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use askama::Template;
+use async_trait::async_trait;
 use axum::body::Body;
 use axum::extract::{Form, Path, Query, Request, State};
 use axum::middleware::{self, Next};
@@ -11,8 +12,8 @@ use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use chrono::{Duration as ChronoDuration, NaiveDate, Utc};
 use deck_builder::{
-    build_deck, GeneratedDeckVersion, GlobalSettingsVersion, ServiceLease, ServicePreset,
-    ServiceRecord, ServiceStatus, Sources,
+    build_deck, Catechism, FixedComponent, GeneratedDeckVersion, GlobalSettingsVersion, Psalm,
+    ServiceLease, ServicePreset, ServiceRecord, ServiceStatus, Sources, StoredSong,
 };
 use hmac::{Hmac, Mac};
 use http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, ETAG, SET_COOKIE};
@@ -76,6 +77,34 @@ pub(crate) struct AppState {
     next_id: Arc<AtomicU64>,
 }
 
+struct ServiceSources {
+    upstream: Arc<dyn Sources>,
+    store: Arc<dyn ObjectStore>,
+}
+
+#[async_trait]
+impl Sources for ServiceSources {
+    async fn scripture(&self, reference: &str) -> anyhow::Result<deck_builder::Scripture> {
+        self.upstream.scripture(reference).await
+    }
+
+    async fn song(&self, id: &str, version: u64) -> anyhow::Result<StoredSong> {
+        songs::resolve(self.store.as_ref(), id, version).await
+    }
+
+    fn psalm(&self, reference: &str) -> anyhow::Result<Psalm> {
+        self.upstream.psalm(reference)
+    }
+
+    fn catechism(&self, question: u16) -> anyhow::Result<Catechism> {
+        self.upstream.catechism(question)
+    }
+
+    fn fixed_component(&self, key: &str) -> anyhow::Result<FixedComponent> {
+        self.upstream.fixed_component(key)
+    }
+}
+
 pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppConfig) -> Router {
     let state = AppState {
         sources,
@@ -87,8 +116,8 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
 
     let protected = Router::new()
         .route("/", get(builder_page))
-        .route("/library", get(builder_page))
-        .route("/admin", get(builder_page))
+        .route("/library", get(library_page))
+        .route("/admin", get(admin_page))
         .route("/api/session", get(current_session))
         .route("/api/logout", post(logout))
         .route("/api/presets", get(list_presets))
@@ -98,6 +127,7 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
         .route("/api/songs/:id/restore", post(songs::restore))
         .route("/api/songs/:id/upload", post(songs::upload))
         .route("/api/songs/:id/preview", get(songs::preview))
+        .route("/api/settings", get(get_settings).put(update_settings))
         .route("/api/services", get(list_services).post(create_service))
         .route(
             "/api/services/:id",
@@ -116,6 +146,9 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
         .route("/healthz", get(healthz))
         .route("/static/app.css", get(stylesheet))
         .route("/static/app.js", get(javascript))
+        .route("/static/library.js", get(library_javascript))
+        .route("/static/admin.js", get(admin_javascript))
+        .route("/favicon.svg", get(favicon))
         .merge(protected)
         .with_state(state)
 }
@@ -142,6 +175,27 @@ async fn javascript() -> impl IntoResponse {
     )
 }
 
+async fn library_javascript() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("../static/library.js"),
+    )
+}
+
+async fn admin_javascript() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("../static/admin.js"),
+    )
+}
+
+async fn favicon() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+        include_str!("../static/favicon.svg"),
+    )
+}
+
 #[derive(Template)]
 #[template(path = "login.html")]
 struct LoginTemplate {
@@ -152,6 +206,22 @@ struct LoginTemplate {
 #[derive(Template)]
 #[template(path = "builder.html")]
 struct BuilderTemplate {
+    staff_name: String,
+    staff_initial: String,
+    csrf: String,
+}
+
+#[derive(Template)]
+#[template(path = "library.html")]
+struct LibraryTemplate {
+    staff_name: String,
+    staff_initial: String,
+    csrf: String,
+}
+
+#[derive(Template)]
+#[template(path = "admin.html")]
+struct AdminTemplate {
     staff_name: String,
     staff_initial: String,
     csrf: String,
@@ -227,18 +297,42 @@ async fn builder_page(
     State(state): State<AppState>,
     Extension(session): Extension<StaffSession>,
 ) -> Result<Html<String>, AppError> {
-    let initial = session
-        .display_name
-        .chars()
-        .next()
-        .unwrap_or('S')
-        .to_uppercase()
-        .to_string();
+    let initial = staff_initial(&session.display_name);
     render(BuilderTemplate {
         staff_name: session.display_name,
         staff_initial: initial,
         csrf: csrf_for(&state, &session.token)?,
     })
+}
+
+async fn library_page(
+    State(state): State<AppState>,
+    Extension(session): Extension<StaffSession>,
+) -> Result<Html<String>, AppError> {
+    render(LibraryTemplate {
+        staff_initial: staff_initial(&session.display_name),
+        staff_name: session.display_name,
+        csrf: csrf_for(&state, &session.token)?,
+    })
+}
+
+async fn admin_page(
+    State(state): State<AppState>,
+    Extension(session): Extension<StaffSession>,
+) -> Result<Html<String>, AppError> {
+    render(AdminTemplate {
+        staff_initial: staff_initial(&session.display_name),
+        staff_name: session.display_name,
+        csrf: csrf_for(&state, &session.token)?,
+    })
+}
+
+fn staff_initial(name: &str) -> String {
+    name.chars()
+        .next()
+        .unwrap_or('S')
+        .to_uppercase()
+        .to_string()
 }
 
 async fn current_session(
@@ -462,13 +556,13 @@ async fn generate_service(
     let (mut service, object) = load_service(&state, &id).await?;
     require_lease(&service, &session, &headers)?;
     let settings = load_settings(&state).await?;
-    let bytes = build_deck(
-        &service,
-        state.sources.as_ref(),
-        &settings.ccli_licence_number,
-    )
-    .await
-    .map_err(|error| AppError::internal(format!("could not build service deck: {error}")))?;
+    let sources = ServiceSources {
+        upstream: state.sources.clone(),
+        store: state.store.clone(),
+    };
+    let bytes = build_deck(&service, &sources, &settings.ccli_licence_number)
+        .await
+        .map_err(|error| AppError::internal(format!("could not build service deck: {error}")))?;
     let revision = state
         .store
         .list(&format!("generated/services/{id}/revisions/"))
@@ -559,19 +653,76 @@ async fn service_history(
     Ok(Json(revisions))
 }
 
+async fn get_settings(
+    State(state): State<AppState>,
+) -> Result<Json<GlobalSettingsVersion>, AppError> {
+    Ok(Json(load_settings(&state).await?))
+}
+
+#[derive(Deserialize)]
+struct SettingsInput {
+    ccli_licence_number: String,
+}
+
+async fn update_settings(
+    State(state): State<AppState>,
+    Extension(session): Extension<StaffSession>,
+    Json(input): Json<SettingsInput>,
+) -> Result<Json<GlobalSettingsVersion>, AppError> {
+    let licence = input.ccli_licence_number.trim();
+    if licence.is_empty()
+        || licence.len() > 32
+        || !licence
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | ' '))
+    {
+        return Err(AppError::bad_request(
+            "CCLI licence number must contain 1 to 32 letters, numbers, spaces or hyphens",
+        ));
+    }
+    let (current, object) = load_settings_object(&state).await?;
+    let settings = GlobalSettingsVersion {
+        version: current.version.saturating_add(1),
+        ccli_licence_number: licence.to_string(),
+        created_at: Utc::now(),
+        created_by: session.display_name,
+    };
+    put_json(
+        state.store.as_ref(),
+        &format!("entities/settings/versions/{}.json", settings.version),
+        &settings,
+        PutCondition::IfNoneMatch,
+    )
+    .await?;
+    put_json(
+        state.store.as_ref(),
+        "entities/settings/current.json",
+        &settings,
+        PutCondition::IfMatch(object.etag),
+    )
+    .await?;
+    Ok(Json(settings))
+}
+
 async fn load_settings(state: &AppState) -> Result<GlobalSettingsVersion, AppError> {
+    Ok(load_settings_object(state).await?.0)
+}
+
+async fn load_settings_object(
+    state: &AppState,
+) -> Result<(GlobalSettingsVersion, StoredObject), AppError> {
     match state.store.get("entities/settings/current.json").await {
-        Ok(object) => Ok(serde_json::from_slice(&object.bytes)?),
+        Ok(object) => Ok((serde_json::from_slice(&object.bytes)?, object)),
         Err(StoreError::NotFound(_)) => {
             let settings = GlobalSettingsVersion::default();
-            let _ = put_json(
+            let object = put_json(
                 state.store.as_ref(),
                 "entities/settings/current.json",
                 &settings,
                 PutCondition::IfNoneMatch,
             )
-            .await;
-            Ok(settings)
+            .await?;
+            Ok((settings, object))
         }
         Err(error) => Err(error.into()),
     }

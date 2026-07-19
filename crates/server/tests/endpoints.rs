@@ -129,6 +129,200 @@ async fn mutating_requests_require_csrf() {
 }
 
 #[tokio::test]
+async fn authenticated_navigation_renders_distinct_workspaces() {
+    let (app, cookie, _) = authenticated().await;
+    for (path, marker) in [
+        ("/", "Service order"),
+        ("/library", "Choose and review stored songs"),
+        ("/admin", "Staff settings"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("cookie", &cookie)
+                    .header("accept", "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains(marker), "{path}");
+    }
+}
+
+#[tokio::test]
+async fn song_catalogue_selection_resolves_during_generation() {
+    let (app, cookie, csrf) = authenticated().await;
+    let created_song = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/songs")
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"title":"Test Hymn","aliases":["A test song"],"variant_label":"Test version","author_owner":"Test Author","rights_status":"public_domain","ccli_song_number":null,"lyric_slides":["First verse","Second verse"],"credits":"Test Author"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created_song.status(), StatusCode::OK);
+    let body = to_bytes(created_song.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let song: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let song_id = song["id"].as_str().unwrap().to_string();
+
+    let search = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/songs?q=test%20song")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(search.into_body(), usize::MAX).await.unwrap();
+    let matches: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(matches.as_array().unwrap().len(), 1);
+
+    let created_service = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/services")
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Song test service","date":"2026-07-19","preset":"am"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(created_service.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let mut service: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let service_id = service["id"].as_str().unwrap().to_string();
+
+    let locked = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/services/{service_id}/lock"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(locked.into_body(), usize::MAX).await.unwrap();
+    let lease: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let token = lease["token"].as_str().unwrap();
+
+    let component = service["components"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|component| component["type"] == "song")
+        .unwrap();
+    component["title"] = serde_json::json!("Test Hymn");
+    component["song"] = serde_json::json!({
+        "entity_id": song_id,
+        "version": 1,
+        "slide_count": 2
+    });
+    component["lyric_slides"] = serde_json::json!([]);
+
+    let updated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/services/{service_id}"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("x-lease-token", token)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&service).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), StatusCode::OK);
+
+    let generated = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/services/{service_id}/generate"))
+                .header("cookie", cookie)
+                .header("x-csrf-token", csrf)
+                .header("x-lease-token", token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(generated.status(), StatusCode::OK);
+    let body = to_bytes(generated.into_body(), usize::MAX).await.unwrap();
+    Presentation::open_bytes(&body).unwrap().validate().unwrap();
+}
+
+#[tokio::test]
+async fn administration_versions_the_ccli_setting() {
+    let (app, cookie, csrf) = authenticated().await;
+    let updated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/settings")
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ccli_licence_number":"654321"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), StatusCode::OK);
+    let body = to_bytes(updated.into_body(), usize::MAX).await.unwrap();
+    let settings: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(settings["version"], 2);
+    assert_eq!(settings["ccli_licence_number"], "654321");
+
+    let current = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(current.into_body(), usize::MAX).await.unwrap();
+    let settings: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(settings["version"], 2);
+    assert_eq!(settings["ccli_licence_number"], "654321");
+}
+
+#[tokio::test]
 async fn creates_locks_and_generates_an_immutable_revision() {
     let (app, cookie, csrf) = authenticated().await;
     let created = app

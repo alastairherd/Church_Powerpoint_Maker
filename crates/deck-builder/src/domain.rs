@@ -170,6 +170,8 @@ pub struct NoticeRow {
 pub struct VersionPin {
     pub entity_id: String,
     pub version: u64,
+    #[serde(default)]
+    pub slide_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -294,7 +296,13 @@ impl ServiceComponent {
     pub fn estimated_slides(&self) -> usize {
         match self {
             Self::Notices { rows, .. } => rows.len().max(1).div_ceil(5),
-            Self::Song { lyric_slides, .. } => lyric_slides.len().max(1),
+            Self::Song {
+                song, lyric_slides, ..
+            } => song
+                .as_ref()
+                .map(|pin| pin.slide_count)
+                .unwrap_or(lyric_slides.len())
+                .max(1),
             Self::Psalm { slide_breaks, .. } => slide_breaks.len().max(1),
             Self::LiturgyBlock { text, .. } => text.split("\n\n").count().max(1),
             Self::CustomTextImage { slides, .. } => slides.len().max(1),
