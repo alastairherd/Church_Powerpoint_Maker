@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use deck_builder::{
     build_deck, FixedComponent, Scripture, ServiceComponent, ServicePreset, ServiceRecord, Sources,
+    StoredSong, VersionPin,
 };
 use pptx_template::Presentation;
 use std::io::{Cursor, Read};
@@ -15,6 +16,17 @@ impl Sources for MockSources {
         Ok(Scripture {
             reference: reference.to_string(),
             text: "[1] In the beginning God created the heavens and the earth.".to_string(),
+        })
+    }
+
+    async fn song(&self, _id: &str, _version: u64) -> anyhow::Result<StoredSong> {
+        Ok(StoredSong {
+            title: "Source presentation".into(),
+            slides: Vec::new(),
+            credits: String::new(),
+            source_pptx: Some(
+                include_bytes!("../../../legacy/python/example_from_template.pptx").to_vec(),
+            ),
         })
     }
 }
@@ -66,6 +78,12 @@ async fn builds_valid_pptx_from_service_record() {
     assert!(pres.slide_count() >= 4);
     pres.validate()
         .expect("generated deck is structurally valid");
+    let mut zip = ZipArchive::new(Cursor::new(bytes)).expect("generated zip opens");
+    for index in 0..zip.len() {
+        let name = zip.by_index(index).expect("zip part").name().to_string();
+        assert!(!name.contains("notesSlide"), "notes are removed: {name}");
+        assert!(!name.contains("notesMaster"), "notes are removed: {name}");
+    }
 }
 
 #[tokio::test]
@@ -120,5 +138,45 @@ fn xml_is_parseable(xml: &str) -> bool {
             Ok(_) => buf.clear(),
             Err(_) => return false,
         }
+    }
+}
+
+#[tokio::test]
+async fn imports_original_song_slides_instead_of_rebuilding_their_text() {
+    let mut service = ServiceRecord::new(
+        "service-song-import",
+        "Song import",
+        NaiveDate::from_ymd_opt(2026, 7, 19).unwrap(),
+        ServicePreset::Am,
+        "Alastair",
+    );
+    service.components = vec![ServiceComponent::Song {
+        id: "song".into(),
+        title: "Source presentation".into(),
+        song: Some(VersionPin {
+            entity_id: "source-song".into(),
+            version: 1,
+            slide_count: 28,
+        }),
+        lyric_slides: Vec::new(),
+        credits: String::new(),
+    }];
+
+    let source = Presentation::open_bytes(include_bytes!(
+        "../../../legacy/python/example_from_template.pptx"
+    ))
+    .expect("source opens");
+    let bytes = build_deck(&service, &MockSources, "522221")
+        .await
+        .expect("deck builds");
+    let generated = Presentation::open_bytes(&bytes).expect("generated deck opens");
+
+    assert_eq!(generated.slide_count(), source.slide_count());
+    for index in 0..source.slide_count() {
+        assert_eq!(
+            generated.slide_text(index).unwrap(),
+            source.slide_text(index).unwrap(),
+            "source slide {index} is preserved"
+        );
     }
 }

@@ -42,6 +42,7 @@ pub struct Run {
     pub superscript: bool,
     pub bold: bool,
     pub italic: bool,
+    pub underline: bool,
 }
 
 impl Run {
@@ -51,6 +52,7 @@ impl Run {
             superscript: false,
             bold: false,
             italic: false,
+            underline: false,
         }
     }
 
@@ -60,6 +62,17 @@ impl Run {
             superscript: true,
             bold: false,
             italic: false,
+            underline: false,
+        }
+    }
+
+    pub fn underlined(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            superscript: false,
+            bold: false,
+            italic: false,
+            underline: true,
         }
     }
 }
@@ -247,6 +260,312 @@ impl Presentation {
         self.validate()
     }
 
+    pub fn import_slides(&mut self, source_bytes: &[u8]) -> Result<Vec<usize>> {
+        let source = Self::open_bytes(source_bytes)?;
+        source.validate_song_source(self.slide_size()?)?;
+
+        let import_number = self
+            .files
+            .keys()
+            .filter(|name| name.contains("_import"))
+            .count() as u32
+            + 1;
+        let mut mapping = BTreeMap::new();
+        for slide in &source.slides {
+            let destination = format!("ppt/slides/slide{}.xml", self.next_slide_number);
+            self.next_slide_number += 1;
+            mapping.insert(slide.part.clone(), destination);
+        }
+
+        let mut processed = HashSet::new();
+        let mut imported = Vec::with_capacity(source.slides.len());
+        for slide in &source.slides {
+            let destination = mapping
+                .get(&slide.part)
+                .expect("source slides are mapped before import")
+                .clone();
+            self.copy_import_part(
+                &source,
+                &slide.part,
+                &destination,
+                import_number,
+                &mut mapping,
+                &mut processed,
+            )?;
+            imported.push(self.add_slide_to_presentation(destination)?);
+        }
+        Ok(imported)
+    }
+
+    pub fn remove_auxiliary_content(&mut self) -> Result<()> {
+        let removed: HashSet<String> = self
+            .files
+            .keys()
+            .filter(|name| auxiliary_part(name))
+            .cloned()
+            .collect();
+        let relationship_files: Vec<String> = self
+            .files
+            .keys()
+            .filter(|name| name.ends_with(".rels") && !removed.contains(*name))
+            .cloned()
+            .collect();
+
+        for relationships_name in relationship_files {
+            let Some(owner_part) = owner_part_for_relationships(&relationships_name) else {
+                continue;
+            };
+            let relationships = self.part_string(&relationships_name)?;
+            let mut owner_xml = self
+                .files
+                .get(&owner_part)
+                .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
+            let mut kept = Vec::new();
+            for relationship in relationship_tags(&relationships) {
+                let relationship_type = attr(&relationship, "Type").unwrap_or_default();
+                let external = attr(&relationship, "TargetMode").as_deref() == Some("External");
+                let target_removed = attr(&relationship, "Target")
+                    .and_then(|target| resolve_part_target(&owner_part, &target).ok())
+                    .is_some_and(|target| removed.contains(&target));
+                if external || drop_auxiliary_relationship(&relationship_type) || target_removed {
+                    if let (Some(xml), Some(id)) = (owner_xml.as_mut(), attr(&relationship, "Id")) {
+                        *xml = strip_relationship_reference(xml, &id);
+                    }
+                } else {
+                    kept.push(relationship);
+                }
+            }
+            self.files.insert(
+                relationships_name,
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{}</Relationships>"#,
+                    kept.join("")
+                )
+                .into_bytes(),
+            );
+            if let Some(xml) = owner_xml {
+                self.files.insert(owner_part, xml.into_bytes());
+            }
+        }
+
+        self.files.retain(|name, _| !removed.contains(name));
+        let mut content_types = self.part_string(CONTENT_TYPES)?;
+        let overrides = Regex::new(r#"<Override\b[^>]*/>"#).expect("valid override regex");
+        content_types = overrides
+            .replace_all(&content_types, |captures: &regex::Captures<'_>| {
+                let entry = captures.get(0).expect("override match").as_str();
+                let removed_entry = attr(entry, "PartName")
+                    .map(|name| name.trim_start_matches('/').to_string())
+                    .is_some_and(|name| removed.contains(&name));
+                if removed_entry {
+                    String::new()
+                } else {
+                    entry.to_string()
+                }
+            })
+            .to_string();
+        self.files
+            .insert(CONTENT_TYPES.into(), content_types.into_bytes());
+        Ok(())
+    }
+
+    fn copy_import_part(
+        &mut self,
+        source: &Presentation,
+        source_part: &str,
+        destination_part: &str,
+        import_number: u32,
+        mapping: &mut BTreeMap<String, String>,
+        processed: &mut HashSet<String>,
+    ) -> Result<()> {
+        if !processed.insert(source_part.to_string()) {
+            return Ok(());
+        }
+        let source_bytes = source
+            .files
+            .get(source_part)
+            .ok_or_else(|| Error::MissingPart(source_part.to_string()))?
+            .clone();
+        self.files
+            .insert(destination_part.to_string(), source_bytes.clone());
+        self.copy_import_content_type(source, source_part, destination_part)?;
+
+        let source_relationships_part = relationships_part(source_part);
+        let Some(source_relationships) = source.files.get(&source_relationships_part) else {
+            return Ok(());
+        };
+        let relationships_xml = String::from_utf8(source_relationships.clone()).map_err(|_| {
+            Error::InvalidPackage(format!("{source_relationships_part} is not utf-8"))
+        })?;
+        let mut owner_xml = String::from_utf8(source_bytes).ok();
+        let mut copied_relationships = Vec::new();
+
+        for relationship in relationship_tags(&relationships_xml) {
+            let relationship_type = attr(&relationship, "Type").unwrap_or_default();
+            let relationship_id = attr(&relationship, "Id").unwrap_or_default();
+            let external = attr(&relationship, "TargetMode").as_deref() == Some("External");
+            if external || drop_import_relationship(&relationship_type) {
+                if let Some(xml) = owner_xml.as_mut() {
+                    *xml = strip_relationship_reference(xml, &relationship_id);
+                }
+                continue;
+            }
+
+            let target = attr(&relationship, "Target").ok_or_else(|| {
+                Error::InvalidPackage(format!(
+                    "relationship {relationship_id} in {source_relationships_part} has no target"
+                ))
+            })?;
+            let source_target = resolve_part_target(source_part, &target)?;
+            if !source.files.contains_key(&source_target) {
+                return Err(Error::MissingPart(source_target));
+            }
+
+            let destination_target = if let Some(mapped) = mapping.get(&source_target) {
+                mapped.clone()
+            } else if let Some(existing) = self.identical_import_part(source, &source_target) {
+                mapping.insert(source_target.clone(), existing.clone());
+                processed.insert(source_target.clone());
+                existing
+            } else {
+                let mapped = self.allocate_import_part(&source_target, import_number);
+                mapping.insert(source_target.clone(), mapped.clone());
+                mapped
+            };
+
+            self.copy_import_part(
+                source,
+                &source_target,
+                &destination_target,
+                import_number,
+                mapping,
+                processed,
+            )?;
+            let rewritten_target = relative_part_target(destination_part, &destination_target);
+            copied_relationships.push(replace_xml_attr(&relationship, "Target", &rewritten_target));
+        }
+
+        if let Some(xml) = owner_xml {
+            self.files
+                .insert(destination_part.to_string(), xml.into_bytes());
+        }
+        let destination_relationships_part = relationships_part(destination_part);
+        self.files.insert(
+            destination_relationships_part,
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{}</Relationships>"#,
+                copied_relationships.join("")
+            )
+            .into_bytes(),
+        );
+        Ok(())
+    }
+
+    fn identical_import_part(&self, source: &Presentation, source_part: &str) -> Option<String> {
+        let bytes = source.files.get(source_part)?;
+        let extension = source_part.rsplit_once('.')?.1;
+        let source_relationships = source.files.get(&relationships_part(source_part));
+        self.files
+            .iter()
+            .find(|(name, candidate)| {
+                name.rsplit_once('.')
+                    .is_some_and(|(_, candidate_extension)| candidate_extension == extension)
+                    && *candidate == bytes
+                    && match (
+                        source_relationships,
+                        self.files.get(&relationships_part(name)),
+                    ) {
+                        (None, None) => true,
+                        (Some(source), Some(destination)) => source == destination,
+                        _ => false,
+                    }
+            })
+            .map(|(name, _)| name.clone())
+    }
+
+    fn allocate_import_part(&self, source_part: &str, import_number: u32) -> String {
+        if !self.files.contains_key(source_part) {
+            return source_part.to_string();
+        }
+        let (directory, filename) = source_part.rsplit_once('/').unwrap_or(("", source_part));
+        let (stem, extension) = filename
+            .rsplit_once('.')
+            .map(|(stem, extension)| (stem, format!(".{extension}")))
+            .unwrap_or((filename, String::new()));
+        let prefix = stem.trim_end_matches(|character: char| character.is_ascii_digit());
+        if prefix.len() < stem.len() {
+            for number in 1..100_000 {
+                let candidate = if directory.is_empty() {
+                    format!("{prefix}{number}{extension}")
+                } else {
+                    format!("{directory}/{prefix}{number}{extension}")
+                };
+                if !self.files.contains_key(&candidate) {
+                    return candidate;
+                }
+            }
+        }
+        let candidate = if directory.is_empty() {
+            format!("{stem}_import{import_number}{extension}")
+        } else {
+            format!("{directory}/{stem}_import{import_number}{extension}")
+        };
+        if !self.files.contains_key(&candidate) {
+            return candidate;
+        }
+        for suffix in 2..100_000 {
+            let candidate = if directory.is_empty() {
+                format!("{stem}_import{import_number}_{suffix}{extension}")
+            } else {
+                format!("{directory}/{stem}_import{import_number}_{suffix}{extension}")
+            };
+            if !self.files.contains_key(&candidate) {
+                return candidate;
+            }
+        }
+        unreachable!("package part limit prevents exhausting import names")
+    }
+
+    fn copy_import_content_type(
+        &mut self,
+        source: &Presentation,
+        source_part: &str,
+        destination_part: &str,
+    ) -> Result<()> {
+        let source_types = source.part_string(CONTENT_TYPES)?;
+        let mut destination_types = self.part_string(CONTENT_TYPES)?;
+        let source_name = format!("/{source_part}");
+        let destination_name = format!("/{destination_part}");
+        let overrides = Regex::new(r#"<Override\b[^>]*/>"#).expect("valid override regex");
+        if let Some(source_override) = overrides
+            .find_iter(&source_types)
+            .find(|entry| attr(entry.as_str(), "PartName").as_deref() == Some(source_name.as_str()))
+        {
+            if !destination_types.contains(&format!("PartName=\"{destination_name}\"")) {
+                let copied =
+                    replace_xml_attr(source_override.as_str(), "PartName", &destination_name);
+                insert_before(&mut destination_types, "</Types>", &copied)?;
+            }
+        } else if let Some(extension) = source_part.rsplit_once('.').map(|(_, value)| value) {
+            let defaults = Regex::new(r#"<Default\b[^>]*/>"#).expect("valid default regex");
+            let source_default = defaults
+                .find_iter(&source_types)
+                .find(|entry| attr(entry.as_str(), "Extension").as_deref() == Some(extension))
+                .map(|entry| entry.as_str().to_string());
+            if let Some(source_default) = source_default {
+                let has_default = defaults
+                    .find_iter(&destination_types)
+                    .any(|entry| attr(entry.as_str(), "Extension").as_deref() == Some(extension));
+                if !has_default {
+                    insert_before(&mut destination_types, "</Types>", &source_default)?;
+                }
+            }
+        }
+        self.files
+            .insert(CONTENT_TYPES.into(), destination_types.into_bytes());
+        Ok(())
+    }
+
     pub fn add_slide_from_layout(&mut self, layout_index: usize) -> Result<usize> {
         let layout_number = layout_index + 1;
         let layout_part = format!("ppt/slideLayouts/slideLayout{layout_number}.xml");
@@ -289,19 +608,74 @@ impl Presentation {
         let slide_number = self.next_slide_number;
         self.next_slide_number += 1;
         let part = format!("ppt/slides/slide{slide_number}.xml");
-        let xml = self
-            .files
-            .get(&source)
-            .ok_or_else(|| Error::MissingPart(source.clone()))?
-            .clone();
-        self.files.insert(part.clone(), xml);
+        let mut xml = self.part_string(&source)?;
 
         let source_rels = slide_rels_part(&source);
         if let Some(rels) = self.files.get(&source_rels).cloned() {
-            self.files.insert(slide_rels_part(&part), rels);
+            let relationships = String::from_utf8(rels)
+                .map_err(|_| Error::InvalidPackage(format!("{source_rels} is not utf-8")))?;
+            let mut copied = Vec::new();
+            for relationship in relationship_tags(&relationships) {
+                let relationship_type = attr(&relationship, "Type").unwrap_or_default();
+                let external = attr(&relationship, "TargetMode").as_deref() == Some("External");
+                if external || drop_import_relationship(&relationship_type) {
+                    if let Some(id) = attr(&relationship, "Id") {
+                        xml = strip_relationship_reference(&xml, &id);
+                    }
+                } else {
+                    copied.push(relationship);
+                }
+            }
+            self.files.insert(
+                slide_rels_part(&part),
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{}</Relationships>"#,
+                    copied.join("")
+                )
+                .into_bytes(),
+            );
         }
+        self.files.insert(part.clone(), xml.into_bytes());
 
         self.add_slide_to_presentation(part)
+    }
+
+    pub fn copy_shape(
+        &mut self,
+        source_slide: usize,
+        source_name: &str,
+        target_slide: usize,
+        target_name: &str,
+    ) -> Result<()> {
+        let source_xml = self.slide_xml(source_slide)?;
+        let (_, _, source_shape) = find_shape_block(&source_xml, source_name)?;
+        let target_part = self
+            .slides
+            .get(target_slide)
+            .ok_or(Error::SlideIndex(target_slide))?
+            .part
+            .clone();
+        let mut target_xml = self.part_string(&target_part)?;
+        let ids = Regex::new(r#"<p:cNvPr\b[^>]*\bid="(\d+)""#).expect("valid shape id regex");
+        let next_id = ids
+            .captures_iter(&target_xml)
+            .filter_map(|captures| captures[1].parse::<u32>().ok())
+            .max()
+            .unwrap_or(1)
+            + 1;
+        let properties = Regex::new(r#"<p:cNvPr\b[^>]*/?>"#).expect("valid shape properties regex");
+        let original = properties.find(&source_shape).ok_or_else(|| {
+            Error::InvalidPackage(format!("shape {source_name} has no properties"))
+        })?;
+        let renamed = replace_xml_attr(
+            &replace_xml_attr(original.as_str(), "id", &next_id.to_string()),
+            "name",
+            target_name,
+        );
+        let copied = source_shape.replacen(original.as_str(), &renamed, 1);
+        insert_before(&mut target_xml, "</p:spTree>", &copied)?;
+        self.files.insert(target_part, target_xml.into_bytes());
+        Ok(())
     }
 
     pub fn delete_slide(&mut self, index: usize) -> Result<()> {
@@ -366,6 +740,7 @@ impl Presentation {
     pub fn validate(&self) -> Result<()> {
         let content_types = self.part_string(CONTENT_TYPES)?;
         let pres_rels = self.part_string(PRESENTATION_RELS)?;
+        let mut visited = HashSet::new();
         for slide in &self.slides {
             if !self.files.contains_key(&slide.part) {
                 return Err(Error::MissingPart(slide.part.clone()));
@@ -384,6 +759,54 @@ impl Presentation {
                 )));
             }
             self.validate_slide_relationships(slide)?;
+            self.validate_part_graph(&slide.part, &content_types, &mut visited)?;
+        }
+        Ok(())
+    }
+
+    fn validate_part_graph(
+        &self,
+        part: &str,
+        content_types: &str,
+        visited: &mut HashSet<String>,
+    ) -> Result<()> {
+        if !visited.insert(part.to_string()) {
+            return Ok(());
+        }
+        let has_override = content_types.contains(&format!("PartName=\"/{part}\""));
+        let extension = part.rsplit_once('.').map(|(_, value)| value);
+        let has_default = extension.is_some_and(|extension| {
+            Regex::new(r#"<Default\b[^>]*/>"#)
+                .expect("valid default regex")
+                .find_iter(content_types)
+                .any(|entry| attr(entry.as_str(), "Extension").as_deref() == Some(extension))
+        });
+        if !has_override && !has_default {
+            return Err(Error::InvalidPackage(format!(
+                "missing content type for {part}"
+            )));
+        }
+
+        let relationships_name = relationships_part(part);
+        let Some(relationships) = self.files.get(&relationships_name) else {
+            return Ok(());
+        };
+        let relationships = String::from_utf8(relationships.clone())
+            .map_err(|_| Error::InvalidPackage(format!("{relationships_name} is not utf-8")))?;
+        for relationship in relationship_tags(&relationships) {
+            if attr(&relationship, "TargetMode").as_deref() == Some("External") {
+                continue;
+            }
+            let target = attr(&relationship, "Target").ok_or_else(|| {
+                Error::InvalidPackage(format!(
+                    "relationship in {relationships_name} has no target"
+                ))
+            })?;
+            let target = resolve_part_target(part, &target)?;
+            if !self.files.contains_key(&target) {
+                return Err(Error::MissingPart(target));
+            }
+            self.validate_part_graph(&target, content_types, visited)?;
         }
         Ok(())
     }
@@ -533,6 +956,37 @@ impl<'a> SlideMut<'a> {
             placeholder_index: index,
         })
     }
+
+    pub fn shape(self, name: &str) -> Result<ShapeMut<'a>> {
+        let xml = self.presentation.slide_xml(self.index)?;
+        find_shape_block(&xml, name).map(|_| ShapeMut {
+            presentation: self.presentation,
+            slide_index: self.index,
+            shape_name: name.to_string(),
+        })
+    }
+}
+
+pub struct ShapeMut<'a> {
+    presentation: &'a mut Presentation,
+    slide_index: usize,
+    shape_name: String,
+}
+
+impl ShapeMut<'_> {
+    pub fn set_text(self, text: &str) -> Result<()> {
+        self.set_rich_text(&[Run::plain(text)])
+    }
+
+    pub fn set_rich_text(self, runs: &[Run]) -> Result<()> {
+        let part = self.presentation.slides[self.slide_index].part.clone();
+        let mut xml = self.presentation.part_string(&part)?;
+        let (start, end, block) = find_shape_block(&xml, &self.shape_name)?;
+        let updated = replace_text_body(&block, runs)?;
+        xml.replace_range(start..end, &updated);
+        self.presentation.files.insert(part, xml.into_bytes());
+        Ok(())
+    }
 }
 
 pub struct PlaceholderMut<'a> {
@@ -601,6 +1055,136 @@ fn slide_rels_part(part: &str) -> String {
     format!("ppt/slides/_rels/{file}.rels")
 }
 
+fn relationships_part(part: &str) -> String {
+    let (directory, filename) = part.rsplit_once('/').unwrap_or(("", part));
+    if directory.is_empty() {
+        format!("_rels/{filename}.rels")
+    } else {
+        format!("{directory}/_rels/{filename}.rels")
+    }
+}
+
+fn owner_part_for_relationships(relationships: &str) -> Option<String> {
+    let without_suffix = relationships.strip_suffix(".rels")?;
+    Some(without_suffix.replacen("/_rels/", "/", 1))
+}
+
+fn auxiliary_part(name: &str) -> bool {
+    [
+        "/notesSlides/",
+        "/notesMasters/",
+        "/comments/",
+        "/threadedComments/",
+        "/people/",
+        "/tags/",
+    ]
+    .iter()
+    .any(|segment| name.contains(segment))
+        || name.ends_with("/commentAuthors.xml")
+}
+
+fn resolve_part_target(owner_part: &str, target: &str) -> Result<String> {
+    let owner_directory = owner_part
+        .rsplit_once('/')
+        .map(|(dir, _)| dir)
+        .unwrap_or("");
+    let joined = if target.starts_with('/') {
+        target.trim_start_matches('/').to_string()
+    } else if owner_directory.is_empty() {
+        target.to_string()
+    } else {
+        format!("{owner_directory}/{target}")
+    };
+    let mut normalised = Vec::new();
+    for component in joined.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                if normalised.pop().is_none() {
+                    return Err(Error::InvalidPackage(format!(
+                        "relationship target escapes the package: {target}"
+                    )));
+                }
+            }
+            value => normalised.push(value),
+        }
+    }
+    Ok(normalised.join("/"))
+}
+
+fn relative_part_target(owner_part: &str, target_part: &str) -> String {
+    let owner_directory = owner_part
+        .rsplit_once('/')
+        .map(|(directory, _)| directory)
+        .unwrap_or("");
+    let owner: Vec<_> = owner_directory
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect();
+    let target: Vec<_> = target_part
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect();
+    let common = owner
+        .iter()
+        .zip(&target)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut relative = vec![".."; owner.len().saturating_sub(common)];
+    relative.extend(target[common..].iter().copied());
+    relative.join("/")
+}
+
+fn drop_import_relationship(relationship_type: &str) -> bool {
+    [
+        "/notesSlide",
+        "/notesMaster",
+        "/comments",
+        "/commentAuthors",
+        "/tags",
+        "/customXml",
+        "/slide",
+        "/oleObject",
+        "/activeXControl",
+        "/vbaProject",
+    ]
+    .iter()
+    .any(|suffix| relationship_type.ends_with(suffix))
+}
+
+fn drop_auxiliary_relationship(relationship_type: &str) -> bool {
+    [
+        "/notesSlide",
+        "/notesMaster",
+        "/comments",
+        "/commentAuthors",
+        "/tags",
+        "/customXml",
+        "/oleObject",
+        "/activeXControl",
+        "/vbaProject",
+    ]
+    .iter()
+    .any(|suffix| relationship_type.ends_with(suffix))
+}
+
+fn strip_relationship_reference(xml: &str, relationship_id: &str) -> String {
+    let reference = Regex::new(&format!(
+        r#"\s+r:(?:id|embed|link)="{}""#,
+        regex::escape(relationship_id)
+    ))
+    .expect("valid relationship reference regex");
+    reference.replace_all(xml, "").to_string()
+}
+
+fn replace_xml_attr(tag: &str, name: &str, value: &str) -> String {
+    let attribute = Regex::new(&format!(r#"\b{}="[^"]*""#, regex::escape(name)))
+        .expect("valid XML attribute regex");
+    attribute
+        .replace(tag, format!(r#"{name}="{}""#, xml_escape(value)))
+        .to_string()
+}
+
 fn insert_before(xml: &mut String, needle: &str, insertion: &str) -> Result<()> {
     let idx = xml
         .find(needle)
@@ -624,6 +1208,23 @@ fn find_placeholder_block(xml: &str, index: usize) -> Result<(usize, usize, Stri
     Err(Error::PlaceholderIndex(index))
 }
 
+fn find_shape_block(xml: &str, name: &str) -> Result<(usize, usize, String)> {
+    let re = Regex::new(r#"(?s)<p:sp>.*?</p:sp>"#).expect("valid regex");
+    let properties_re = Regex::new(r#"<p:cNvPr\b[^>]*/?>"#).expect("valid shape properties regex");
+    for matched in re.find_iter(xml) {
+        let block = matched.as_str();
+        let Some(properties) = properties_re.find(block) else {
+            continue;
+        };
+        if attr(properties.as_str(), "name").as_deref() == Some(name) {
+            return Ok((matched.start(), matched.end(), block.to_string()));
+        }
+    }
+    Err(Error::InvalidPackage(format!(
+        "slide does not contain shape {name}"
+    )))
+}
+
 fn replace_text_body(shape: &str, runs: &[Run]) -> Result<String> {
     let body_re = Regex::new(r#"(?s)<p:txBody>.*?</p:txBody>"#).expect("valid regex");
     let tx_body = if let Some(m) = body_re.find(shape) {
@@ -636,13 +1237,13 @@ fn replace_text_body(shape: &str, runs: &[Run]) -> Result<String> {
         let run_properties = extract_xml_tag(existing, "a:rPr")
             .or_else(|| extract_xml_tag(existing, "a:defRPr").map(def_rpr_to_rpr));
         format!(
-            "{prefix}<a:p>{paragraph_properties}{}</a:p></p:txBody>",
-            runs_xml(runs, run_properties.as_deref())
+            "{prefix}{}</p:txBody>",
+            paragraphs_xml(runs, &paragraph_properties, run_properties.as_deref())
         )
     } else {
         format!(
-            "<p:txBody><a:bodyPr/><a:lstStyle/><a:p>{}</a:p></p:txBody>",
-            runs_xml(runs, None)
+            "<p:txBody><a:bodyPr/><a:lstStyle/>{}</p:txBody>",
+            paragraphs_xml(runs, "", None)
         )
     };
 
@@ -653,6 +1254,32 @@ fn replace_text_body(shape: &str, runs: &[Run]) -> Result<String> {
         insert_before(&mut updated, "</p:sp>", &tx_body)?;
         Ok(updated)
     }
+}
+
+fn paragraphs_xml(runs: &[Run], paragraph_properties: &str, default_rpr: Option<&str>) -> String {
+    let mut paragraphs: Vec<Vec<Run>> = vec![Vec::new()];
+    for run in runs {
+        let mut lines = run.text.split('\n').peekable();
+        while let Some(line) = lines.next() {
+            if !line.is_empty() {
+                let mut fragment = run.clone();
+                fragment.text = line.to_string();
+                paragraphs.last_mut().expect("one paragraph").push(fragment);
+            }
+            if lines.peek().is_some() {
+                paragraphs.push(Vec::new());
+            }
+        }
+    }
+    paragraphs
+        .into_iter()
+        .map(|paragraph| {
+            format!(
+                "<a:p>{paragraph_properties}{}</a:p>",
+                runs_xml(&paragraph, default_rpr)
+            )
+        })
+        .collect()
 }
 
 fn runs_xml(runs: &[Run], default_rpr: Option<&str>) -> String {
@@ -678,6 +1305,9 @@ fn run_attrs(run: &Run) -> String {
     if run.italic {
         attrs.push_str(" i=\"1\"");
     }
+    if run.underline {
+        attrs.push_str(" u=\"sng\"");
+    }
     attrs
 }
 
@@ -685,14 +1315,23 @@ fn merge_run_attrs(default_rpr: &str, attrs: &str) -> String {
     if attrs.is_empty() {
         return default_rpr.to_string();
     }
-    if let Some(idx) = default_rpr.find('>') {
-        let mut out = default_rpr.to_string();
-        let insert_at = idx.saturating_sub(usize::from(default_rpr[..idx].ends_with('/')));
-        out.insert_str(insert_at, attrs);
-        out
-    } else {
-        format!("<a:rPr lang=\"en-GB\"{attrs}/>")
+    let mut out = default_rpr.to_string();
+    let attributes =
+        Regex::new(r#"\s([A-Za-z][A-Za-z0-9]*)="([^"]*)""#).expect("valid run attribute regex");
+    for captures in attributes.captures_iter(attrs) {
+        let name = &captures[1];
+        let value = &captures[2];
+        let existing = Regex::new(&format!(r#"\s{}="[^"]*""#, regex::escape(name)))
+            .expect("valid existing run attribute regex");
+        let replacement = format!(r#" {name}="{value}""#);
+        if existing.is_match(&out) {
+            out = existing.replace(&out, replacement.as_str()).to_string();
+        } else if let Some(idx) = out.find('>') {
+            let insert_at = idx.saturating_sub(usize::from(out[..idx].ends_with('/')));
+            out.insert_str(insert_at, &replacement);
+        }
     }
+    out
 }
 
 fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {

@@ -14,6 +14,17 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 const TEMPLATE: &[u8] = include_bytes!("../assets/template.pptx");
+const SEED_WELCOME: usize = 0;
+const SEED_NOTICES: usize = 1;
+const SEED_CALL_TO_WORSHIP: usize = 2;
+const SEED_PRAYER: usize = 8;
+const SEED_READING: usize = 15;
+const SEED_PSALM: usize = 16;
+const SEED_TEACHING: usize = 19;
+const SEED_LITURGY: usize = 23;
+const SEED_SONG: usize = 39;
+const SEED_SONG_FINAL: usize = 46;
+const SEED_REFRESHMENTS: usize = 48;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scripture {
@@ -97,16 +108,20 @@ pub async fn build_deck(
     ccli_licence_number: &str,
 ) -> anyhow::Result<Vec<u8>> {
     let mut pres = Presentation::open_bytes(TEMPLATE).context("open embedded TWPC template")?;
+    let seed_count = pres.slide_count();
 
     for component in &service.components {
         match component {
             ServiceComponent::Welcome { heading, .. } => {
-                add_text_slide(&mut pres, heading, "")?;
+                let slide = clone_seed(&mut pres, SEED_WELCOME, "welcome")?;
+                set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
             }
             ServiceComponent::Notices { heading, rows, .. } => {
                 let pages = paginate_notices(rows, 5);
                 for page in pages {
-                    add_text_slide(&mut pres, heading, &page)?;
+                    let slide = clone_seed(&mut pres, SEED_NOTICES, "notices")?;
+                    set_shape_text(&mut pres, slide, "Title 1", heading)?;
+                    set_shape_text(&mut pres, slide, "TextBox 2", &page)?;
                 }
             }
             ServiceComponent::CallToWorship {
@@ -115,12 +130,14 @@ pub async fn build_deck(
                 text,
                 ..
             } => {
-                let body = if reference.trim().is_empty() {
-                    text.clone()
-                } else {
-                    format!("{}\n\n{}", text.trim(), reference.trim())
-                };
-                add_text_slide(&mut pres, heading, body.trim())?;
+                let slide = clone_seed(&mut pres, SEED_CALL_TO_WORSHIP, "call to worship")?;
+                set_shape_text(&mut pres, slide, "Title 1", heading)?;
+                let mut runs = textproc::scripture_runs(text.trim());
+                if !reference.trim().is_empty() {
+                    let separator = if text.trim().is_empty() { "" } else { "\n\n" };
+                    runs.push(Run::plain(format!("{separator}{}", reference.trim())));
+                }
+                set_shape_runs(&mut pres, slide, "Text Placeholder 2", &runs)?;
             }
             ServiceComponent::CuePrayer {
                 heading, cue, text, ..
@@ -130,7 +147,19 @@ pub async fn build_deck(
                     .filter(|part| !part.is_empty())
                     .collect::<Vec<_>>()
                     .join("\n\n");
-                add_text_slide(&mut pres, heading, &body)?;
+                if body.is_empty() {
+                    let (seed, shape) = if heading == "Join us for refreshments" {
+                        (SEED_REFRESHMENTS, "TextShape 1")
+                    } else {
+                        (SEED_PRAYER, "Title 1")
+                    };
+                    let slide = clone_seed(&mut pres, seed, "prayer cue")?;
+                    set_shape_text(&mut pres, slide, shape, heading)?;
+                } else {
+                    let slide = clone_seed(&mut pres, SEED_LITURGY, "prayer text")?;
+                    set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
+                    set_shape_text(&mut pres, slide, "TextShape 2", &body)?;
+                }
             }
             ServiceComponent::Song {
                 title,
@@ -148,27 +177,39 @@ pub async fn build_deck(
                 } else {
                     None
                 };
-                let (resolved_title, slides, resolved_credits) = match stored {
-                    Some(stored) => (stored.title, stored.slides, stored.credits),
-                    None => (title.clone(), lyric_slides.clone(), credits.clone()),
+                let (resolved_title, slides, resolved_credits, source_pptx) = match stored {
+                    Some(stored) => (
+                        stored.title,
+                        stored.slides,
+                        stored.credits,
+                        stored.source_pptx,
+                    ),
+                    None => (title.clone(), lyric_slides.clone(), credits.clone(), None),
                 };
-                let slides = if slides.is_empty() {
-                    vec!["Song selected in the service editor".to_string()]
+                if let Some(source_pptx) = source_pptx {
+                    pres.import_slides(&source_pptx)
+                        .context("import original song slides")?;
                 } else {
-                    slides
-                };
-                let slide_count = slides.len();
-                for (index, lyrics) in slides.into_iter().enumerate() {
-                    let idx = pres.add_slide_from_layout(0).context("add song slide")?;
-                    set_text(&mut pres, idx, 0, &resolved_title)?;
-                    set_text(&mut pres, idx, 1, &lyrics)?;
-                    if index + 1 == slide_count {
-                        let footer = if resolved_credits.trim().is_empty() {
-                            format!("CCLI: {ccli_licence_number}")
-                        } else {
-                            format!("{}\nCCLI: {ccli_licence_number}", resolved_credits.trim())
-                        };
-                        set_text(&mut pres, idx, 2, &footer)?;
+                    let slides = if slides.is_empty() {
+                        vec!["Song selected in the service editor".to_string()]
+                    } else {
+                        slides
+                    };
+                    let slide_count = slides.len();
+                    for (index, lyrics) in slides.into_iter().enumerate() {
+                        let is_final = index + 1 == slide_count;
+                        let seed = if is_final { SEED_SONG_FINAL } else { SEED_SONG };
+                        let slide = clone_seed(&mut pres, seed, "lyric slide")?;
+                        set_shape_text(&mut pres, slide, "TextShape 1", &resolved_title)?;
+                        set_shape_text(&mut pres, slide, "TextBox 1", &lyrics)?;
+                        if is_final {
+                            let footer = if resolved_credits.trim().is_empty() {
+                                format!("CCLI: {ccli_licence_number}")
+                            } else {
+                                format!("{}\nCCLI: {ccli_licence_number}", resolved_credits.trim())
+                            };
+                            set_shape_text(&mut pres, slide, "TextBox 4", &footer)?;
+                        }
                     }
                 }
             }
@@ -197,30 +238,30 @@ pub async fn build_deck(
                 };
                 let count = slides.len();
                 for (index, stanza) in slides.into_iter().enumerate() {
-                    let idx = pres.add_slide_from_layout(3).context("add psalm slide")?;
+                    let slide = clone_seed(&mut pres, SEED_PSALM, "psalm")?;
                     let title = if reference.trim().is_empty() {
                         heading
                     } else {
                         reference
                     };
-                    set_text(&mut pres, idx, 0, title)?;
-                    set_text(&mut pres, idx, 1, &stanza)?;
+                    set_shape_text(&mut pres, slide, "TextShape 1", title)?;
+                    set_shape_runs(&mut pres, slide, "TextShape 2", &psalm_runs(&stanza))?;
                     if index + 1 == count {
-                        set_text(
-                            &mut pres,
-                            idx,
-                            2,
-                            &format!(
-                                "Words: Sing Psalms! © 2003 Free Church of Scotland\nCCLI: {ccli_licence_number}"
-                            ),
-                        )?;
+                        pres.copy_shape(SEED_SONG_FINAL, "TextBox 4", slide, "Psalm Credits")?;
                         let tune_credit = tune
                             .as_ref()
                             .map(|pin| {
                                 format!("Tune catalogue: {} v{}", pin.entity_id, pin.version)
                             })
                             .unwrap_or_else(|| format!("Meter: {meter}"));
-                        set_text(&mut pres, idx, 3, &tune_credit)?;
+                        set_shape_text(
+                            &mut pres,
+                            slide,
+                            "Psalm Credits",
+                            &format!(
+                                "Words: Sing Psalms! © 2003\nFree Church of Scotland\n{tune_credit}\nCCLI: {ccli_licence_number}"
+                            ),
+                        )?;
                     }
                 }
             }
@@ -233,7 +274,14 @@ pub async fn build_deck(
                 let page = bible_page
                     .map(|page| format!("\nPage {page}"))
                     .unwrap_or_default();
-                add_reading_slide(&mut pres, heading, &format!("{reference}{page}"))?;
+                let slide = clone_seed(&mut pres, SEED_READING, "reading")?;
+                set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
+                set_shape_text(
+                    &mut pres,
+                    slide,
+                    "TextShape 3",
+                    &format!("{reference}{page}"),
+                )?;
             }
             ServiceComponent::Teaching {
                 heading,
@@ -254,7 +302,9 @@ pub async fn build_deck(
                 } else {
                     text.clone()
                 };
-                add_reading_slide(&mut pres, heading, &resolved)?;
+                let slide = clone_seed(&mut pres, SEED_TEACHING, "teaching")?;
+                set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
+                set_shape_text(&mut pres, slide, "TextShape 3", &resolved)?;
             }
             ServiceComponent::LiturgyBlock {
                 heading, key, text, ..
@@ -268,7 +318,9 @@ pub async fn build_deck(
                     text.split("\n\n").map(str::to_string).collect()
                 };
                 for page in pages {
-                    add_text_slide(&mut pres, heading, &page)?;
+                    let slide = clone_seed(&mut pres, SEED_LITURGY, "liturgy")?;
+                    set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
+                    set_shape_text(&mut pres, slide, "TextShape 2", &page)?;
                 }
             }
             ServiceComponent::CustomTextImage {
@@ -279,17 +331,21 @@ pub async fn build_deck(
                     .map(String::as_str)
                     .chain(slides.is_empty().then_some(""))
                 {
-                    add_reading_slide(&mut pres, heading, page)?;
+                    let slide = clone_seed(&mut pres, SEED_READING, "custom text")?;
+                    set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
+                    set_shape_text(&mut pres, slide, "TextShape 3", page)?;
                 }
             }
         }
     }
 
-    if pres.slide_count() > 1 {
+    for _ in 0..seed_count {
         pres.delete_slide(0)
-            .context("remove blank template slide")?;
+            .context("remove canonical template seed slide")?;
     }
 
+    pres.remove_auxiliary_content()
+        .context("remove notes and non-visible relationships")?;
     pres.validate().context("validate generated pptx")?;
     pres.save_bytes().context("save generated pptx")
 }
@@ -320,12 +376,24 @@ pub fn paginate_notices(rows: &[NoticeRow], rows_per_slide: usize) -> Vec<String
 }
 
 pub fn propose_psalm_groups(stanzas: &[String]) -> Vec<String> {
+    const MAX_RENDERED_LINES: usize = 8;
+    const MAX_CHARACTERS: usize = 360;
+
     let mut groups = Vec::new();
     let mut current = String::new();
     for stanza in stanzas {
         let separator = usize::from(!current.is_empty()) * 2;
+        let rendered_lines = current
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+            + stanza
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count();
         if !current.is_empty()
-            && (current.lines().count() >= 8 || current.len() + separator + stanza.len() > 620)
+            && (rendered_lines > MAX_RENDERED_LINES
+                || current.len() + separator + stanza.len() > MAX_CHARACTERS)
         {
             groups.push(current);
             current = String::new();
@@ -444,41 +512,109 @@ impl FixedComponent {
     }
 }
 
-fn add_text_slide(pres: &mut Presentation, title: &str, text: &str) -> anyhow::Result<()> {
-    let idx = pres.add_slide_from_layout(2).context("add text slide")?;
-    set_text(pres, idx, 0, title)?;
-    set_text(pres, idx, 1, text)
+fn clone_seed(
+    pres: &mut Presentation,
+    seed_slide: usize,
+    description: &str,
+) -> anyhow::Result<usize> {
+    pres.clone_slide(seed_slide)
+        .with_context(|| format!("clone TWPC {description} seed slide"))
 }
 
-fn add_reading_slide(pres: &mut Presentation, title: &str, text: &str) -> anyhow::Result<()> {
-    let idx = pres.add_slide_from_layout(4).context("add reading slide")?;
-    set_text(pres, idx, 0, title)?;
-    set_text(pres, idx, 1, text)
-}
-
-fn set_text(
+fn set_shape_text(
     pres: &mut Presentation,
     slide: usize,
-    placeholder: usize,
+    shape: &str,
     text: &str,
 ) -> anyhow::Result<()> {
-    pres.slide_mut(slide)?
-        .placeholder(placeholder)?
-        .set_text(text)?;
+    pres.slide_mut(slide)?.shape(shape)?.set_text(text)?;
     Ok(())
 }
 
-#[allow(dead_code)]
-fn set_rich_text(
+fn set_shape_runs(
     pres: &mut Presentation,
     slide: usize,
-    placeholder: usize,
+    shape: &str,
     runs: &[Run],
 ) -> anyhow::Result<()> {
-    pres.slide_mut(slide)?
-        .placeholder(placeholder)?
-        .set_rich_text(runs)?;
+    pres.slide_mut(slide)?.shape(shape)?.set_rich_text(runs)?;
     Ok(())
+}
+
+fn psalm_runs(text: &str) -> Vec<Run> {
+    let mut marked = Vec::new();
+    let mut remaining = text;
+    let mut underlined = false;
+    while !remaining.is_empty() {
+        let next_open = remaining.find("<underline>");
+        let next_close = remaining.find("</underline>");
+        let next = match (next_open, next_close) {
+            (Some(open), Some(close)) => Some(open.min(close)),
+            (Some(open), None) => Some(open),
+            (None, Some(close)) => Some(close),
+            (None, None) => None,
+        };
+        let Some(index) = next else {
+            let mut run = Run::plain(remaining);
+            run.underline = underlined;
+            marked.push(run);
+            break;
+        };
+        if index > 0 {
+            let mut run = Run::plain(&remaining[..index]);
+            run.underline = underlined;
+            marked.push(run);
+        }
+        if remaining[index..].starts_with("<underline>") {
+            underlined = true;
+            remaining = &remaining[index + "<underline>".len()..];
+        } else {
+            underlined = false;
+            remaining = &remaining[index + "</underline>".len()..];
+        }
+    }
+
+    let mut runs = Vec::new();
+    for run in marked {
+        let mut current = String::new();
+        let mut current_superscript = None;
+        for character in run.text.chars() {
+            let superscript = normalise_superscript(character);
+            let is_superscript = superscript.is_some();
+            if current_superscript.is_some_and(|value| value != is_superscript) {
+                let mut split = Run::plain(std::mem::take(&mut current));
+                split.underline = run.underline;
+                split.superscript = current_superscript.unwrap_or(false);
+                runs.push(split);
+            }
+            current_superscript = Some(is_superscript);
+            current.push(superscript.unwrap_or(character));
+        }
+        if !current.is_empty() {
+            let mut split = Run::plain(current);
+            split.underline = run.underline;
+            split.superscript = current_superscript.unwrap_or(false);
+            runs.push(split);
+        }
+    }
+    runs
+}
+
+fn normalise_superscript(character: char) -> Option<char> {
+    Some(match character {
+        '⁰' => '0',
+        '¹' => '1',
+        '²' => '2',
+        '³' => '3',
+        '⁴' => '4',
+        '⁵' => '5',
+        '⁶' => '6',
+        '⁷' => '7',
+        '⁸' => '8',
+        '⁹' => '9',
+        '⁻' => '-',
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -564,5 +700,25 @@ mod tests {
         ];
         let pages = propose_psalm_groups(&stanzas);
         assert_eq!(pages.join("\n\n"), stanzas.join("\n\n"));
+        assert_eq!(pages.len(), 2);
+    }
+
+    #[test]
+    fn psalm_23_uses_readable_two_stanza_groups() {
+        let psalm = Psalm::find("Psalm 23:1-6").expect("Psalm 23 exists");
+        let pages = propose_psalm_groups(&psalm.stanzas);
+
+        assert_eq!(pages.len(), 3);
+        assert!(pages.iter().all(|page| page.lines().count() <= 7));
+    }
+
+    #[test]
+    fn psalm_runs_preserve_superscript_verse_numbers_and_underlining() {
+        let runs = psalm_runs("⁴<underline>Though I</underline> walk through the valley");
+        assert!(runs.iter().any(|run| run.superscript && run.text == "4"));
+        assert!(runs
+            .iter()
+            .any(|run| run.underline && run.text == "Though I"));
+        assert!(!runs.iter().any(|run| run.text.contains("underline")));
     }
 }
