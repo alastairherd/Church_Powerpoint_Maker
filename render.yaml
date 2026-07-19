@@ -7,5 +7,15 @@ services:
     envVars:
       - key: ESV_API_KEY
         sync: false
-      - key: SHEET_CSV_URL
+      - key: STAFF_PASSWORD_HASH
+        sync: false
+      - key: SESSION_SIGNING_SECRET
+        generateValue: true
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
         sync: false

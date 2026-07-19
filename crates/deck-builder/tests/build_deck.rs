@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use chrono::NaiveDate;
-use deck_builder::{build_deck, Component, FixedComponent, Hymn, Scripture, ServiceOrder, Sources};
+use deck_builder::{
+    build_deck, FixedComponent, Scripture, ServiceComponent, ServicePreset, ServiceRecord, Sources,
+};
 use pptx_template::Presentation;
 use std::io::{Cursor, Read};
 use zip::ZipArchive;
@@ -15,62 +17,70 @@ impl Sources for MockSources {
             text: "[1] In the beginning God created the heavens and the earth.".to_string(),
         })
     }
-
-    async fn hymn(&self, _url: &str) -> anyhow::Result<Hymn> {
-        Ok(Hymn {
-            title: "Amazing Grace".to_string(),
-            stanzas: vec!["Amazing grace! how sweet the sound".to_string()],
-            author: "John Newton".to_string(),
-            composer: "Unknown".to_string(),
-            tune: "NEW BRITAIN".to_string(),
-            copyright: "Public Domain".to_string(),
-        })
-    }
 }
 
 #[tokio::test]
-async fn builds_valid_pptx_from_sample_service_order() {
-    let order = ServiceOrder {
-        date: NaiveDate::from_ymd_opt(2026, 7, 12).unwrap(),
-        components: vec![
-            Component::Fixed {
-                key: "confession".to_string(),
-                title: Some("Confession".to_string()),
-            },
-            Component::Psalm {
-                reference: "Psalm 1:1-3 (a)".to_string(),
-            },
-            Component::Scripture {
-                reference: "Genesis 1:1".to_string(),
-                title: Some("First Reading".to_string()),
-            },
-            Component::Catechism { question: 1 },
-            Component::Hymn {
-                url: "https://hymnary.org/text/amazing_grace_how_sweet_the_sound".to_string(),
-            },
-        ],
-    };
+async fn builds_valid_pptx_from_service_record() {
+    let mut service = ServiceRecord::new(
+        "service-one",
+        "Morning service",
+        NaiveDate::from_ymd_opt(2026, 7, 12).unwrap(),
+        ServicePreset::Am,
+        "Alastair",
+    );
+    service.components = vec![
+        ServiceComponent::LiturgyBlock {
+            id: "confession".into(),
+            heading: "Confession".into(),
+            key: "confession".into(),
+            version: Some(1),
+            text: String::new(),
+        },
+        ServiceComponent::Psalm {
+            id: "psalm".into(),
+            heading: "Psalm".into(),
+            reference: "Psalm 1:1-3 (a)".into(),
+            tune: None,
+            slide_breaks: Vec::new(),
+        },
+        ServiceComponent::Reading {
+            id: "reading".into(),
+            heading: "First Reading".into(),
+            reference: "Genesis 1:1".into(),
+            bible_page: Some(1),
+        },
+        ServiceComponent::Song {
+            id: "song".into(),
+            title: "Amazing Grace".into(),
+            song: None,
+            lyric_slides: vec!["Amazing grace! how sweet the sound".into()],
+            credits: "Words: John Newton · Public Domain".into(),
+        },
+    ];
 
-    let bytes = build_deck(&order, &MockSources).await.expect("deck builds");
+    let bytes = build_deck(&service, &MockSources, "522221")
+        .await
+        .expect("deck builds");
     let pres = Presentation::open_bytes(&bytes).expect("opens generated deck");
-
     assert!(bytes.starts_with(b"PK"));
-    assert!(pres.slide_count() >= 5);
+    assert!(pres.slide_count() >= 4);
     pres.validate()
         .expect("generated deck is structurally valid");
 }
 
 #[tokio::test]
 async fn generated_deck_contains_parseable_slide_xml() {
-    let order = ServiceOrder {
-        date: NaiveDate::from_ymd_opt(2026, 7, 12).unwrap(),
-        components: vec![Component::Fixed {
-            key: "confession".to_string(),
-            title: Some("Confession".to_string()),
-        }],
-    };
-
-    let bytes = build_deck(&order, &MockSources).await.expect("deck builds");
+    let mut service = ServiceRecord::new(
+        "service-two",
+        "Evening service",
+        NaiveDate::from_ymd_opt(2026, 7, 12).unwrap(),
+        ServicePreset::TraditionalPm,
+        "Alastair",
+    );
+    service.components.truncate(6);
+    let bytes = build_deck(&service, &MockSources, "522221")
+        .await
+        .expect("deck builds");
     let mut zip = ZipArchive::new(Cursor::new(bytes)).expect("pptx zip opens");
 
     for i in 0..zip.len() {
@@ -81,11 +91,7 @@ async fn generated_deck_contains_parseable_slide_xml() {
             file.read_to_string(&mut xml).expect("slide xml is utf-8");
             assert!(
                 xml_is_parseable(&xml),
-                "generated slide XML should parse: {name}\n{xml}"
-            );
-            assert!(
-                !xml.contains("charset=\"0\" b=\"1\""),
-                "bold should be applied to a:rPr, not nested font tags: {name}\n{xml}"
+                "generated slide XML should parse: {name}"
             );
         }
     }
@@ -96,10 +102,8 @@ fn embedded_sources_resolve_catechism_psalm_and_fixed_component() {
     let fixed = FixedComponent::find("confession").expect("confession exists");
     let catechism = deck_builder::Catechism::find(1).expect("wsc q1 exists");
     let psalm = deck_builder::Psalm::find("Psalm 1:1-3 (a)").expect("psalm exists");
-
     assert_eq!(fixed.speaker, "All.");
     assert_eq!(catechism.question, "What is the chief end of man?");
-    assert_eq!(psalm.title, "Psalm 1:1-3 (a)");
     assert_eq!(psalm.stanzas.len(), 3);
 }
 

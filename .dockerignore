@@ -2,6 +2,12 @@ target/
 __pycache__/
 *.pyc
 .git/
+.agents/
+.codex/
 .ipynb_checkpoints/
+example-pptx/
+legacy/
 out.pptx
+.env
 .env.local
+envs.txt

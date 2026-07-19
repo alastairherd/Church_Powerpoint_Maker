@@ -4,7 +4,8 @@ use axum::Json;
 use deck_builder::LiveSources;
 use http::StatusCode;
 use serde_json::json;
-use server::app_with_sources;
+use server::store::{MemoryObjectStore, ObjectStore, R2ObjectStore};
+use server::{app, AppConfig};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,15 +17,18 @@ use tower::ServiceBuilder;
 async fn main() -> anyhow::Result<()> {
     let esv_api_key = std::env::var("ESV_API_KEY")
         .map_err(|_| anyhow::anyhow!("ESV_API_KEY must be set before starting the server"))?;
-    let sheet_csv_url = std::env::var("SHEET_CSV_URL")
-        .ok()
-        .filter(|value| !value.is_empty());
+    let config = AppConfig::from_env()?;
     let port = std::env::var("PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(8080);
 
-    let app = app_with_sources(Arc::new(LiveSources::new(esv_api_key)?), sheet_csv_url).layer(
+    let store: Arc<dyn ObjectStore> = if std::env::var("OBJECT_STORE").as_deref() == Ok("memory") {
+        Arc::new(MemoryObjectStore::default())
+    } else {
+        Arc::new(R2ObjectStore::from_env()?)
+    };
+    let app = app(Arc::new(LiveSources::new(esv_api_key)?), store, config).layer(
         ServiceBuilder::new()
             .layer(HandleErrorLayer::new(|err: BoxError| async move {
                 (

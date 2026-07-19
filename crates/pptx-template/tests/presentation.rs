@@ -1,6 +1,6 @@
 use pptx_template::{Presentation, Run};
 
-const TEMPLATE: &[u8] = include_bytes!("../../../template.pptx");
+const TEMPLATE: &[u8] = include_bytes!("../../deck-builder/assets/template.pptx");
 
 #[test]
 fn round_trip_preserves_slide_relationship_integrity() {
@@ -10,6 +10,14 @@ fn round_trip_preserves_slide_relationship_integrity() {
 
     assert_eq!(reopened.slide_count(), 1);
     reopened.validate().expect("structural validation");
+}
+
+#[test]
+fn canonical_template_has_exact_twpc_dimensions() {
+    let pres = Presentation::open_bytes(TEMPLATE).expect("template opens");
+    assert_eq!(pres.slide_size().unwrap(), (10_080_625, 7_559_675));
+    pres.validate_song_source((10_080_625, 7_559_675))
+        .expect("canonical template is a valid source package");
 }
 
 #[test]

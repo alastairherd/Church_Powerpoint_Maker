@@ -14,6 +14,9 @@ const SLIDE_REL_TYPE: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide";
 const LAYOUT_REL_TYPE: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout";
+const MAX_COMPRESSED_PACKAGE_BYTES: usize = 25 * 1024 * 1024;
+const MAX_DECOMPRESSED_PACKAGE_BYTES: u64 = 200 * 1024 * 1024;
+const MAX_PACKAGE_PARTS: usize = 10_000;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -79,12 +82,31 @@ pub struct Presentation {
 
 impl Presentation {
     pub fn open_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() > MAX_COMPRESSED_PACKAGE_BYTES {
+            return Err(Error::InvalidPackage(format!(
+                "compressed package exceeds {} MiB",
+                MAX_COMPRESSED_PACKAGE_BYTES / 1024 / 1024
+            )));
+        }
         let mut archive = ZipArchive::new(Cursor::new(bytes))?;
+        if archive.len() > MAX_PACKAGE_PARTS {
+            return Err(Error::InvalidPackage(format!(
+                "package contains more than {MAX_PACKAGE_PARTS} parts"
+            )));
+        }
         let mut files = BTreeMap::new();
+        let mut decompressed_bytes = 0_u64;
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
             if file.is_dir() {
                 continue;
+            }
+            decompressed_bytes = decompressed_bytes.saturating_add(file.size());
+            if decompressed_bytes > MAX_DECOMPRESSED_PACKAGE_BYTES {
+                return Err(Error::InvalidPackage(format!(
+                    "decompressed package exceeds {} MiB",
+                    MAX_DECOMPRESSED_PACKAGE_BYTES / 1024 / 1024
+                )));
             }
             let mut data = Vec::new();
             file.read_to_end(&mut data)?;
@@ -155,6 +177,74 @@ impl Presentation {
 
     pub fn slide_count(&self) -> usize {
         self.slides.len()
+    }
+
+    pub fn slide_size(&self) -> Result<(u64, u64)> {
+        let presentation = self.part_string(PRESENTATION)?;
+        let tag = Regex::new(r#"<p:sldSz\b[^>]*/>"#)
+            .expect("valid slide size regex")
+            .find(&presentation)
+            .ok_or_else(|| Error::InvalidPackage("presentation has no slide size".into()))?
+            .as_str();
+        let cx = attr(tag, "cx")
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| Error::InvalidPackage("slide width is invalid".into()))?;
+        let cy = attr(tag, "cy")
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| Error::InvalidPackage("slide height is invalid".into()))?;
+        Ok((cx, cy))
+    }
+
+    pub fn validate_song_source(&self, expected_size: (u64, u64)) -> Result<()> {
+        let size = self.slide_size()?;
+        if size != expected_size {
+            return Err(Error::InvalidPackage(format!(
+                "incompatible slide dimensions {} × {}; expected {} × {}",
+                size.0, size.1, expected_size.0, expected_size.1
+            )));
+        }
+        if self.slides.is_empty() {
+            return Err(Error::InvalidPackage("song deck contains no slides".into()));
+        }
+        for name in self.files.keys() {
+            let lowercase = name.to_ascii_lowercase();
+            if lowercase.contains("vbaproject")
+                || lowercase.contains("/activex/")
+                || lowercase.contains("/embeddings/")
+                || lowercase.contains("oleobject")
+            {
+                return Err(Error::InvalidPackage(format!(
+                    "unsupported active or embedded content in {name}"
+                )));
+            }
+        }
+        let content_types = self.part_string(CONTENT_TYPES)?;
+        if content_types.contains("macroEnabled") || content_types.contains("vnd.ms-office") {
+            return Err(Error::InvalidPackage(
+                "macro-enabled PowerPoint packages are not accepted".into(),
+            ));
+        }
+        for (name, bytes) in &self.files {
+            if !name.ends_with(".rels") {
+                continue;
+            }
+            let xml = String::from_utf8(bytes.clone())
+                .map_err(|_| Error::InvalidPackage(format!("{name} is not utf-8")))?;
+            for relationship in relationship_tags(&xml) {
+                let external = attr(&relationship, "TargetMode").as_deref() == Some("External");
+                let relationship_type = attr(&relationship, "Type").unwrap_or_default();
+                if external
+                    && ["image", "audio", "video", "media"]
+                        .iter()
+                        .any(|kind| relationship_type.ends_with(kind))
+                {
+                    return Err(Error::InvalidPackage(format!(
+                        "externally linked media is not accepted ({name})"
+                    )));
+                }
+            }
+        }
+        self.validate()
     }
 
     pub fn add_slide_from_layout(&mut self, layout_index: usize) -> Result<usize> {

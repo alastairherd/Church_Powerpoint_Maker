@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf }}">
+  <title>Service builder · TWPC</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="wordmark" href="/" aria-label="TWPC Service Builder home">
+        <span class="brand-mark" aria-hidden="true">TW</span>
+        <span><strong>TWPC</strong><small>Service Builder</small></span>
+      </a>
+      <nav aria-label="Main navigation">
+        <a class="nav-link active" href="/" aria-current="page"><span aria-hidden="true">◫</span> Services</a>
+        <a class="nav-link" href="/library"><span aria-hidden="true">♫</span> Song library</a>
+        <a class="nav-link" href="/admin"><span aria-hidden="true">⚙</span> Administration</a>
+      </nav>
+      <div class="sidebar-footer">
+        <span class="avatar" aria-hidden="true">{{ staff_initial }}</span>
+        <span><strong>{{ staff_name }}</strong><small>Staff</small></span>
+        <button class="icon-button" id="sign-out" type="button" aria-label="Sign out">↗</button>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="breadcrumbs">Services <span>/</span> <strong id="crumb-name">New service</strong></p>
+          <div class="save-state" id="save-state" aria-live="polite"><span></span> All changes saved</div>
+        </div>
+        <div class="topbar-actions">
+          <button class="button button-secondary" id="review-service" type="button">Review service</button>
+          <button class="button button-primary" id="generate-service" type="button">Generate PowerPoint</button>
+        </div>
+      </header>
+
+      <section class="builder" aria-label="Service editor">
+        <div class="order-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="section-label">Service order</p>
+              <h1 id="service-heading">Create a service</h1>
+            </div>
+            <button class="icon-button" id="new-service" type="button" aria-label="Create another service">＋</button>
+          </div>
+
+          <div class="service-fields">
+            <label>Name<input id="service-name" maxlength="100" placeholder="Sunday morning"></label>
+            <label>Date<input id="service-date" type="date"></label>
+            <label>Order preset<select id="service-preset"></select></label>
+          </div>
+
+          <div class="order-summary">
+            <span><strong id="component-count">0</strong> items</span>
+            <span><strong id="slide-count">0</strong> estimated slides</span>
+          </div>
+          <ol class="component-list" id="component-list" aria-label="Ordered service components"></ol>
+          <button class="add-component" id="add-component" type="button"><span aria-hidden="true">＋</span> Add component</button>
+        </div>
+
+        <div class="editor-panel" id="editor-panel">
+          <div class="empty-editor">
+            <div class="empty-icon" aria-hidden="true">✦</div>
+            <h2>Choose an item to edit</h2>
+            <p>Select an item in the service order. Its wording, song choice, reference, and slide settings will appear here.</p>
+          </div>
+        </div>
+
+        <aside class="review-panel">
+          <div class="panel-heading compact">
+            <div><p class="section-label">Checks</p><h2>Service readiness</h2></div>
+            <span class="score" id="readiness-score">0%</span>
+          </div>
+          <div class="progress" aria-hidden="true"><span id="readiness-bar"></span></div>
+          <div id="validation-list" class="validation-list"></div>
+          <div class="review-total">
+            <span>Estimated deck</span>
+            <strong id="review-slides">0 slides</strong>
+          </div>
+          <p class="review-help">Review checks missing choices and unusually dense slides. Warnings do not stop you generating.</p>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="new-dialog" class="dialog">
+    <form method="dialog" id="new-service-form">
+      <div class="dialog-heading"><div><p class="section-label">New service</p><h2>Choose an order</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <p>Every item can be moved, duplicated, edited, or removed after the preset is applied.</p>
+      <div id="preset-choices" class="preset-choices"></div>
+      <div class="dialog-actions"><button class="button button-secondary" value="cancel">Cancel</button><button class="button button-primary" id="create-service" value="default">Create service</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="review-dialog" class="dialog dialog-wide">
+    <form method="dialog">
+      <div class="dialog-heading"><div><p class="section-label">Final review</p><h2 id="review-title">Service order</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+      <div id="full-review" class="full-review"></div>
+      <div class="dialog-actions"><button class="button button-secondary" value="cancel">Return to editing</button><button class="button button-primary" id="review-generate" value="default">Generate PowerPoint</button></div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

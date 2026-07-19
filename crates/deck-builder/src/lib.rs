@@ -1,50 +1,19 @@
+pub mod domain;
+pub mod presets;
 pub mod sources;
 pub mod textproc;
 
+pub use domain::*;
+
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
-use chrono::NaiveDate;
 use once_cell::sync::Lazy;
 use pptx_template::{Presentation, Run};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::BTreeMap;
 
-const TEMPLATE: &[u8] = include_bytes!("../../../template.pptx");
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceOrder {
-    pub date: NaiveDate,
-    pub components: Vec<Component>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Component {
-    Psalm {
-        reference: String,
-    },
-    Hymn {
-        url: String,
-    },
-    Scripture {
-        reference: String,
-        #[serde(default)]
-        title: Option<String>,
-    },
-    Catechism {
-        question: u16,
-    },
-    Fixed {
-        key: String,
-        #[serde(default)]
-        title: Option<String>,
-    },
-    Sermon {
-        title: String,
-        text: String,
-    },
-}
+const TEMPLATE: &[u8] = include_bytes!("../assets/template.pptx");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scripture {
@@ -53,13 +22,11 @@ pub struct Scripture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Hymn {
+pub struct StoredSong {
     pub title: String,
-    pub stanzas: Vec<String>,
-    pub author: String,
-    pub composer: String,
-    pub tune: String,
-    pub copyright: String,
+    pub slides: Vec<String>,
+    pub credits: String,
+    pub source_pptx: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,7 +53,10 @@ pub struct FixedComponent {
 #[async_trait]
 pub trait Sources: Send + Sync {
     async fn scripture(&self, reference: &str) -> anyhow::Result<Scripture>;
-    async fn hymn(&self, url: &str) -> anyhow::Result<Hymn>;
+
+    async fn song(&self, id: &str, version: u64) -> anyhow::Result<StoredSong> {
+        Err(anyhow!("song {id} version {version} is not available"))
+    }
 
     fn psalm(&self, reference: &str) -> anyhow::Result<Psalm> {
         Psalm::find(reference)
@@ -104,14 +74,12 @@ pub trait Sources: Send + Sync {
 #[derive(Clone)]
 pub struct LiveSources {
     esv: sources::esv::EsvClient,
-    hymnary: sources::hymnary::HymnaryClient,
 }
 
 impl LiveSources {
     pub fn new(esv_api_key: impl Into<String>) -> anyhow::Result<Self> {
         Ok(Self {
             esv: sources::esv::EsvClient::new(esv_api_key)?,
-            hymnary: sources::hymnary::HymnaryClient::new()?,
         })
     }
 }
@@ -121,111 +89,193 @@ impl Sources for LiveSources {
     async fn scripture(&self, reference: &str) -> anyhow::Result<Scripture> {
         self.esv.passage(reference).await
     }
-
-    async fn hymn(&self, url: &str) -> anyhow::Result<Hymn> {
-        self.hymnary.hymn(url).await
-    }
 }
 
 pub async fn build_deck(
-    order: &ServiceOrder,
+    service: &ServiceRecord,
     sources: &(impl Sources + ?Sized),
+    ccli_licence_number: &str,
 ) -> anyhow::Result<Vec<u8>> {
-    let mut pres = Presentation::open_bytes(TEMPLATE).context("open embedded pptx template")?;
+    let mut pres = Presentation::open_bytes(TEMPLATE).context("open embedded TWPC template")?;
 
-    for component in &order.components {
+    for component in &service.components {
         match component {
-            Component::Psalm { reference } => {
-                let psalm = sources.psalm(reference)?;
-                for stanza in psalm.stanzas {
+            ServiceComponent::Welcome { heading, .. } => {
+                add_text_slide(&mut pres, heading, "")?;
+            }
+            ServiceComponent::Notices { heading, rows, .. } => {
+                let pages = paginate_notices(rows, 5);
+                for page in pages {
+                    add_text_slide(&mut pres, heading, &page)?;
+                }
+            }
+            ServiceComponent::CallToWorship {
+                heading,
+                reference,
+                text,
+                ..
+            } => {
+                let body = if reference.trim().is_empty() {
+                    text.clone()
+                } else {
+                    format!("{}\n\n{}", text.trim(), reference.trim())
+                };
+                add_text_slide(&mut pres, heading, body.trim())?;
+            }
+            ServiceComponent::CuePrayer {
+                heading, cue, text, ..
+            } => {
+                let body = [cue.trim(), text.trim()]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                add_text_slide(&mut pres, heading, &body)?;
+            }
+            ServiceComponent::Song {
+                title,
+                song,
+                lyric_slides,
+                credits,
+                ..
+            } => {
+                let stored = if lyric_slides.is_empty() {
+                    if let Some(pin) = song {
+                        Some(sources.song(&pin.entity_id, pin.version).await?)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let (resolved_title, slides, resolved_credits) = match stored {
+                    Some(stored) => (stored.title, stored.slides, stored.credits),
+                    None => (title.clone(), lyric_slides.clone(), credits.clone()),
+                };
+                let slides = if slides.is_empty() {
+                    vec!["Song selected in the service editor".to_string()]
+                } else {
+                    slides
+                };
+                let slide_count = slides.len();
+                for (index, lyrics) in slides.into_iter().enumerate() {
+                    let idx = pres.add_slide_from_layout(0).context("add song slide")?;
+                    set_text(&mut pres, idx, 0, &resolved_title)?;
+                    set_text(&mut pres, idx, 1, &lyrics)?;
+                    if index + 1 == slide_count {
+                        let footer = if resolved_credits.trim().is_empty() {
+                            format!("CCLI: {ccli_licence_number}")
+                        } else {
+                            format!("{}\nCCLI: {ccli_licence_number}", resolved_credits.trim())
+                        };
+                        set_text(&mut pres, idx, 2, &footer)?;
+                    }
+                }
+            }
+            ServiceComponent::Psalm {
+                heading,
+                reference,
+                slide_breaks,
+                tune,
+                ..
+            } => {
+                let (slides, meter) = if slide_breaks.is_empty() && !reference.trim().is_empty() {
+                    let psalm = sources.psalm(reference)?;
+                    (propose_psalm_groups(&psalm.stanzas), psalm.meter)
+                } else {
+                    (slide_breaks.clone(), String::new())
+                };
+                let slides = if slides.is_empty() {
+                    vec!["Choose a psalm passage".to_string()]
+                } else {
+                    slides
+                };
+                let count = slides.len();
+                for (index, stanza) in slides.into_iter().enumerate() {
                     let idx = pres.add_slide_from_layout(3).context("add psalm slide")?;
-                    set_text(&mut pres, idx, 0, &psalm.title)?;
+                    let title = if reference.trim().is_empty() {
+                        heading
+                    } else {
+                        reference
+                    };
+                    set_text(&mut pres, idx, 0, title)?;
                     set_text(&mut pres, idx, 1, &stanza)?;
-                    set_text(
-                        &mut pres,
-                        idx,
-                        2,
-                        "Words: Sing Psalms! (c) 2003 Free Church of Scotland\nCCLI: 522221",
-                    )?;
-                    set_text(&mut pres, idx, 3, &format!("Meter: {}", psalm.meter))?;
+                    if index + 1 == count {
+                        set_text(
+                            &mut pres,
+                            idx,
+                            2,
+                            &format!(
+                                "Words: Sing Psalms! © 2003 Free Church of Scotland\nCCLI: {ccli_licence_number}"
+                            ),
+                        )?;
+                        let tune_credit = tune
+                            .as_ref()
+                            .map(|pin| {
+                                format!("Tune catalogue: {} v{}", pin.entity_id, pin.version)
+                            })
+                            .unwrap_or_else(|| format!("Meter: {meter}"));
+                        set_text(&mut pres, idx, 3, &tune_credit)?;
+                    }
                 }
             }
-            Component::Hymn { url } => {
-                let hymn = sources.hymn(url).await?;
-                for stanza in hymn.stanzas {
-                    let idx = pres.add_slide_from_layout(0).context("add hymn slide")?;
-                    set_text(&mut pres, idx, 0, &hymn.title)?;
-                    set_text(&mut pres, idx, 1, &stanza)?;
-                    set_text(
-                        &mut pres,
-                        idx,
-                        2,
-                        &format!(
-                            "Words: {}\nComposer: {}\nTune: {}\n(c): {}\nCCLI: 522221",
-                            hymn.author, hymn.composer, hymn.tune, hymn.copyright
-                        ),
-                    )?;
-                }
+            ServiceComponent::Reading {
+                heading,
+                reference,
+                bible_page,
+                ..
+            } => {
+                let page = bible_page
+                    .map(|page| format!("\nPage {page}"))
+                    .unwrap_or_default();
+                add_reading_slide(&mut pres, heading, &format!("{reference}{page}"))?;
             }
-            Component::Scripture { reference, title } => {
-                let scripture = sources.scripture(reference).await?;
-                let title = title.as_deref().unwrap_or(&scripture.reference);
-                for page in
-                    textproc::split_lines(&textproc::british_spellings(&scripture.text), 14, 900)
+            ServiceComponent::Teaching {
+                heading,
+                source,
+                selection,
+                text,
+                ..
+            } => {
+                let resolved = if text.trim().is_empty()
+                    && *source == TeachingSource::WestminsterShorterCatechism
                 {
-                    let idx = pres
-                        .add_slide_from_layout(4)
-                        .context("add scripture slide")?;
-                    set_text(&mut pres, idx, 0, title)?;
-                    set_rich_text(&mut pres, idx, 1, &textproc::scripture_runs(&page))?;
+                    selection
+                        .parse::<u16>()
+                        .ok()
+                        .and_then(|number| sources.catechism(number).ok())
+                        .map(|item| format!("{}\n\n{}", item.question, item.answer))
+                        .unwrap_or_default()
+                } else {
+                    text.clone()
+                };
+                add_reading_slide(&mut pres, heading, &resolved)?;
+            }
+            ServiceComponent::LiturgyBlock {
+                heading, key, text, ..
+            } => {
+                let pages = if text.trim().is_empty() {
+                    sources
+                        .fixed_component(key)
+                        .map(|component| component.slides)
+                        .unwrap_or_else(|_| vec![String::new()])
+                } else {
+                    text.split("\n\n").map(str::to_string).collect()
+                };
+                for page in pages {
+                    add_text_slide(&mut pres, heading, &page)?;
                 }
             }
-            Component::Catechism { question } => {
-                let catechism = sources.catechism(*question)?;
-                let idx = pres
-                    .add_slide_from_layout(5)
-                    .context("add catechism slide")?;
-                set_text(
-                    &mut pres,
-                    idx,
-                    0,
-                    &format!("Westminster Shorter Catechism {}", catechism.number),
-                )?;
-                set_text(
-                    &mut pres,
-                    idx,
-                    1,
-                    &format!("{}\n\n{}", catechism.question, catechism.answer),
-                )?;
-            }
-            Component::Fixed { key, title } => {
-                let fixed = sources.fixed_component(key)?;
-                let title = title.as_deref().unwrap_or(key);
-                for body in fixed.slides {
-                    let idx = pres
-                        .add_slide_from_layout(2)
-                        .context("add fixed component slide")?;
-                    set_text(&mut pres, idx, 0, title)?;
-                    set_rich_text(
-                        &mut pres,
-                        idx,
-                        1,
-                        &[
-                            Run {
-                                text: format!("{} ", fixed.speaker),
-                                superscript: false,
-                                bold: true,
-                                italic: false,
-                            },
-                            Run::plain(body),
-                        ],
-                    )?;
+            ServiceComponent::CustomTextImage {
+                heading, slides, ..
+            } => {
+                for page in slides
+                    .iter()
+                    .map(String::as_str)
+                    .chain(slides.is_empty().then_some(""))
+                {
+                    add_reading_slide(&mut pres, heading, page)?;
                 }
-            }
-            Component::Sermon { title, text } => {
-                let idx = pres.add_slide_from_layout(4).context("add sermon slide")?;
-                set_text(&mut pres, idx, 0, title)?;
-                set_text(&mut pres, idx, 1, text)?;
             }
         }
     }
@@ -237,6 +287,53 @@ pub async fn build_deck(
 
     pres.validate().context("validate generated pptx")?;
     pres.save_bytes().context("save generated pptx")
+}
+
+pub fn paginate_notices(rows: &[NoticeRow], rows_per_slide: usize) -> Vec<String> {
+    if rows.is_empty() {
+        return vec![String::new()];
+    }
+    rows.chunks(rows_per_slide.max(1))
+        .map(|page| {
+            page.iter()
+                .map(|row| {
+                    let lead = [row.when.trim(), row.title.trim()]
+                        .into_iter()
+                        .filter(|part| !part.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    if row.details.trim().is_empty() {
+                        lead
+                    } else {
+                        format!("{lead}\n{}", row.details.trim())
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        })
+        .collect()
+}
+
+pub fn propose_psalm_groups(stanzas: &[String]) -> Vec<String> {
+    let mut groups = Vec::new();
+    let mut current = String::new();
+    for stanza in stanzas {
+        let separator = usize::from(!current.is_empty()) * 2;
+        if !current.is_empty()
+            && (current.lines().count() >= 8 || current.len() + separator + stanza.len() > 620)
+        {
+            groups.push(current);
+            current = String::new();
+        }
+        if !current.is_empty() {
+            current.push_str("\n\n");
+        }
+        current.push_str(stanza);
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    groups
 }
 
 impl Psalm {
@@ -270,18 +367,13 @@ impl Psalm {
                         .unwrap_or(entry.content.version == version)
             })
             .ok_or_else(|| anyhow!("psalm not found: {reference}"))?;
-
-        let mut stanzas = Vec::new();
-        for verse in start..=end {
-            if let Some(text) = entry.content.body.get(&verse.to_string()) {
-                stanzas.push(textproc::psalm_superscripts(text));
-            }
-        }
-
+        let stanzas = (start..=end)
+            .filter_map(|verse| entry.content.body.get(&verse.to_string()))
+            .map(|text| textproc::psalm_superscripts(text))
+            .collect::<Vec<_>>();
         if stanzas.is_empty() {
             return Err(anyhow!("no stanzas found for {reference}"));
         }
-
         Ok(Self {
             title: reference.to_string(),
             meter: entry.content.meter.clone(),
@@ -307,9 +399,10 @@ impl Catechism {
 
 impl FixedComponent {
     pub fn find(key: &str) -> anyhow::Result<Self> {
+        let canonical = if key == "grace" { "the_grace" } else { key };
         let component = COMPONENTS
             .iter()
-            .find(|component| component.component == key)
+            .find(|component| component.component == canonical)
             .ok_or_else(|| anyhow!("fixed component not found: {key}"))?;
         let content = component
             .content
@@ -318,30 +411,40 @@ impl FixedComponent {
         let speaker = content
             .get("speaker")
             .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow!("fixed component {key} missing speaker"))?
+            .unwrap_or_default()
             .to_string();
-        let mut slides = Vec::new();
-        for i in 1..=20 {
-            if let Some(value) = content.get(&i.to_string()) {
-                if let Some(text) = value.as_str() {
-                    slides.push(text.to_string());
-                } else if let Some(lines) = value.as_array() {
-                    slides.push(
+        let slides = (1..=30)
+            .filter_map(|i| content.get(&i.to_string()))
+            .filter_map(|value| {
+                value.as_str().map(str::to_string).or_else(|| {
+                    value.as_array().map(|lines| {
                         lines
                             .iter()
                             .filter_map(|line| line.as_str())
                             .collect::<Vec<_>>()
-                            .join("\n"),
-                    );
-                }
-            }
-        }
+                            .join("\n")
+                    })
+                })
+            })
+            .collect();
         Ok(Self {
             key: key.to_string(),
             speaker,
             slides,
         })
     }
+}
+
+fn add_text_slide(pres: &mut Presentation, title: &str, text: &str) -> anyhow::Result<()> {
+    let idx = pres.add_slide_from_layout(2).context("add text slide")?;
+    set_text(pres, idx, 0, title)?;
+    set_text(pres, idx, 1, text)
+}
+
+fn add_reading_slide(pres: &mut Presentation, title: &str, text: &str) -> anyhow::Result<()> {
+    let idx = pres.add_slide_from_layout(4).context("add reading slide")?;
+    set_text(pres, idx, 0, title)?;
+    set_text(pres, idx, 1, text)
 }
 
 fn set_text(
@@ -356,6 +459,7 @@ fn set_text(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn set_rich_text(
     pres: &mut Presentation,
     slide: usize,
@@ -413,14 +517,43 @@ struct ComponentEntry {
 }
 
 static PSALMS: Lazy<Vec<PsalmEntry>> = Lazy::new(|| {
-    serde_json::from_str(include_str!("../../../psalms.json")).expect("valid embedded psalms.json")
+    serde_json::from_str(include_str!("../assets/psalms.json")).expect("valid embedded psalms.json")
 });
-
 static WSC: Lazy<WscFile> = Lazy::new(|| {
-    serde_json::from_str(include_str!("../../../wsc.json")).expect("valid embedded wsc.json")
+    serde_json::from_str(include_str!("../assets/wsc.json")).expect("valid embedded wsc.json")
 });
-
 static COMPONENTS: Lazy<Vec<ComponentEntry>> = Lazy::new(|| {
-    serde_json::from_str(include_str!("../../../components.json"))
+    serde_json::from_str(include_str!("../assets/components.json"))
         .expect("valid embedded components.json")
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complete_notice_rows_paginate_without_dropping_content() {
+        let rows: Vec<_> = (1..=12)
+            .map(|i| NoticeRow {
+                when: format!("Day {i}"),
+                title: format!("Notice {i}"),
+                details: format!("Details {i}"),
+                emphasis: i == 12,
+            })
+            .collect();
+        let pages = paginate_notices(&rows, 5);
+        assert_eq!(pages.len(), 3);
+        assert!(pages[2].contains("Notice 12"));
+    }
+
+    #[test]
+    fn psalm_grouping_preserves_every_stanza() {
+        let stanzas = vec![
+            "a\nb\nc\nd".to_string(),
+            "e\nf\ng\nh".to_string(),
+            "i".to_string(),
+        ];
+        let pages = propose_psalm_groups(&stanzas);
+        assert_eq!(pages.join("\n\n"), stanzas.join("\n\n"));
+    }
+}
