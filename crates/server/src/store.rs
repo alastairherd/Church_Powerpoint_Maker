@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::config::Region;
+use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -113,7 +114,7 @@ impl ObjectStore for R2ObjectStore {
             .key(key)
             .send()
             .await
-            .map_err(|error| classify_s3_error(key, &error.to_string()))?;
+            .map_err(|error| classify_s3_error(key, &error))?;
         let etag = response.e_tag().unwrap_or_default().to_string();
         let content_type = response
             .content_type()
@@ -155,7 +156,7 @@ impl ObjectStore for R2ObjectStore {
         let response = request
             .send()
             .await
-            .map_err(|error| classify_s3_error(key, &error.to_string()))?;
+            .map_err(|error| classify_s3_error(key, &error))?;
         Ok(StoredObject {
             bytes,
             etag: response.e_tag().unwrap_or_default().to_string(),
@@ -170,7 +171,7 @@ impl ObjectStore for R2ObjectStore {
             .key(key)
             .send()
             .await
-            .map_err(|error| classify_s3_error(key, &error.to_string()))?;
+            .map_err(|error| classify_s3_error(key, &error))?;
         Ok(())
     }
 
@@ -186,7 +187,7 @@ impl ObjectStore for R2ObjectStore {
                 .set_continuation_token(continuation)
                 .send()
                 .await
-                .map_err(|error| classify_s3_error(prefix, &error.to_string()))?;
+                .map_err(|error| classify_s3_error(prefix, &error))?;
             keys.extend(
                 response
                     .contents()
@@ -202,13 +203,21 @@ impl ObjectStore for R2ObjectStore {
     }
 }
 
-fn classify_s3_error(key: &str, message: &str) -> StoreError {
-    if message.contains("NoSuchKey") || message.contains("NotFound") || message.contains("404") {
-        StoreError::NotFound(key.to_string())
-    } else if message.contains("PreconditionFailed") || message.contains("412") {
-        StoreError::PreconditionFailed
-    } else {
-        StoreError::Unavailable(message.to_string())
+fn classify_s3_error<E>(key: &str, error: &SdkError<E>) -> StoreError {
+    let status = error
+        .raw_response()
+        .map(|response| response.status().as_u16());
+    classify_s3_status(key, status, &error.to_string())
+}
+
+fn classify_s3_status(key: &str, status: Option<u16>, message: &str) -> StoreError {
+    match status {
+        Some(404) => StoreError::NotFound(key.to_string()),
+        Some(412) => StoreError::PreconditionFailed,
+        Some(status) => {
+            StoreError::Unavailable(format!("R2 request failed with HTTP {status}: {message}"))
+        }
+        None => StoreError::Unavailable(message.to_string()),
     }
 }
 
@@ -326,5 +335,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated.bytes, b"two");
+    }
+
+    #[test]
+    fn r2_http_statuses_preserve_storage_semantics() {
+        assert!(matches!(
+            classify_s3_status("missing.json", Some(404), "service error"),
+            StoreError::NotFound(key) if key == "missing.json"
+        ));
+        assert!(matches!(
+            classify_s3_status("changed.json", Some(412), "service error"),
+            StoreError::PreconditionFailed
+        ));
+        assert!(matches!(
+            classify_s3_status("broken.json", Some(503), "service error"),
+            StoreError::Unavailable(message) if message.contains("HTTP 503")
+        ));
     }
 }
