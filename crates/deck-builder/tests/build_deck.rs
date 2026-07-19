@@ -102,9 +102,13 @@ fn embedded_sources_resolve_catechism_psalm_and_fixed_component() {
     let fixed = FixedComponent::find("confession").expect("confession exists");
     let catechism = deck_builder::Catechism::find(1).expect("wsc q1 exists");
     let psalm = deck_builder::Psalm::find("Psalm 1:1-3 (a)").expect("psalm exists");
+    let psalm_with_typographic_dash =
+        deck_builder::Psalm::find("psalm 23:1–6").expect("friendly psalm reference works");
     assert_eq!(fixed.speaker, "All.");
     assert_eq!(catechism.question, "What is the chief end of man?");
     assert_eq!(psalm.stanzas.len(), 3);
+    assert_eq!(psalm_with_typographic_dash.meter, "11 11 11");
+    assert_eq!(psalm_with_typographic_dash.stanzas.len(), 5);
 }
 
 fn xml_is_parseable(xml: &str) -> bool {

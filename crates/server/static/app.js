@@ -259,6 +259,10 @@ function renderCallFields(fields, component) {
   inline.append(textField('ESV reference', component.reference, value => component.reference = value, 'e.g. Psalm 96:2'));
   const fetchButton = button('Fetch ESV text', 'button button-secondary');
   fetchButton.addEventListener('click', async () => {
+    if (!/\d/.test(component.reference)) {
+      showToast('Enter a complete Bible reference, for example Psalm 23:1–6.');
+      return;
+    }
     fetchButton.disabled = true;
     fetchButton.textContent = 'Fetching…';
     try {
@@ -347,11 +351,31 @@ function renderSongFields(fields, component) {
 }
 
 function renderPsalmFields(fields, component) {
-  fields.append(textField('Psalm reference', component.reference, value => component.reference = value, 'e.g. Psalm 23:1–6'));
+  const inline = document.createElement('div');
+  inline.className = 'inline-action';
+  inline.append(textField('Sing Psalms reference', component.reference, value => component.reference = value, 'e.g. Psalm 23:1–6'));
+  const loadButton = button('Load Psalm text', 'button button-secondary');
+  loadButton.addEventListener('click', async () => {
+    if (!/\d/.test(component.reference)) {
+      showToast('Enter a complete Psalm reference, for example Psalm 23:1–6.');
+      return;
+    }
+    loadButton.disabled = true; loadButton.textContent = 'Loading…';
+    try {
+      const response = await request(`/api/psalm?reference=${encodeURIComponent(component.reference)}`);
+      const data = await response.json();
+      component.reference = data.reference;
+      component.slide_breaks = data.slides;
+      changed();
+      showToast(`Loaded ${data.slides.length} Psalm slides (${data.meter}).`);
+    } catch (error) { showToast(error.message); }
+    finally { loadButton.disabled = false; loadButton.textContent = 'Load Psalm text'; }
+  });
+  inline.append(loadButton); fields.append(inline);
   renderSlideBlocks(fields, component.slide_breaks, 'Psalm slide', () => changed());
   const note = document.createElement('p');
   note.className = 'field-note';
-  note.textContent = 'If no manual groups are entered, readable slide groups are proposed from the embedded Sing Psalms text during generation.';
+  note.textContent = 'Loading proposes readable groups from the embedded Sing Psalms text. You can then edit every break before generation.';
   fields.append(note);
 }
 
@@ -455,23 +479,35 @@ function changed(rerender = true) {
 }
 
 async function saveService() {
-  if (!service || !lease || saving) return saving;
+  if (!service || saving) return saving;
+  if (!lease) throw new Error('This service is read-only. Reload it to acquire the editing lease.');
   clearTimeout(saveTimer);
   setSaveState('saving', 'Saving changes…');
-  saving = request(`/api/services/${service.id}/autosave`, { method: 'PUT', body: JSON.stringify(service) })
-    .then(response => response.json())
-    .then(saved => { service = saved; setSaveState('', 'All changes saved'); return saved; })
-    .catch(error => { setSaveState('error', 'Save failed'); showToast(error.message); throw error; })
-    .finally(() => { saving = null; });
+  saving = (async () => {
+    await renewLease();
+    const response = await request(`/api/services/${service.id}/autosave`, { method: 'PUT', body: JSON.stringify(service) });
+    const saved = await response.json();
+    service = saved; setSaveState('', 'All changes saved'); return saved;
+  })().catch(error => {
+    setSaveState('error', 'Save failed'); showToast(error.message); throw error;
+  }).finally(() => { saving = null; });
   return saving;
+}
+
+async function renewLease(force = false) {
+  if (!service) return null;
+  const remaining = Date.parse(lease?.expires_at || 0) - Date.now();
+  if (!force && lease && remaining > 90_000) return lease;
+  const response = await request(`/api/services/${service.id}/lock`, { method: 'POST' });
+  lease = await response.json();
+  return lease;
 }
 
 async function loadService(record) {
   service = record;
   selectedId = record.components[0]?.id || null;
   try {
-    const response = await request(`/api/services/${record.id}/lock`, { method: 'POST' });
-    lease = await response.json();
+    await renewLease(true);
     setSaveState('', 'All changes saved');
   } catch (error) {
     lease = null;
@@ -520,6 +556,7 @@ function openReview() {
 async function generate() {
   try {
     await saveService();
+    await renewLease();
     setSaveState('saving', 'Generating PowerPoint…');
     const response = await request(`/api/services/${service.id}/generate`, { method: 'POST' });
     const blob = await response.blob();
@@ -527,7 +564,7 @@ async function generate() {
     const filename = disposition.match(/filename="([^"]+)"/)?.[1] || `service-${service.date}.pptx`;
     const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = filename; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
     service.status = 'completed'; lease = null; setSaveState('', 'PowerPoint generated'); showToast('PowerPoint generated and saved to service history.'); ui['review-dialog'].close();
-  } catch (error) { setSaveState('error', 'Generation failed'); showToast(error.message); }
+  } catch (error) { setSaveState('error', `Generation failed: ${error.message}`); showToast(error.message); }
 }
 
 function button(text, className, label) {
@@ -557,6 +594,12 @@ ui['service-preset'].addEventListener('change', () => {
 });
 
 window.addEventListener('beforeunload', event => { if (saveTimer || saving) { event.preventDefault(); event.returnValue = ''; } });
+setInterval(() => {
+  if (service && lease) renewLease().catch(error => {
+    setSaveState('error', 'Editing lease could not be renewed');
+    showToast(error.message);
+  });
+}, 60_000);
 
 Promise.all([
   request('/api/presets').then(response => response.json()),

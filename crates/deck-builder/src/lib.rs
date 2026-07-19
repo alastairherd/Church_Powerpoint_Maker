@@ -179,9 +179,14 @@ pub async fn build_deck(
                 tune,
                 ..
             } => {
-                let (slides, meter) = if slide_breaks.is_empty() && !reference.trim().is_empty() {
+                let (slides, meter) = if !reference.trim().is_empty() {
                     let psalm = sources.psalm(reference)?;
-                    (propose_psalm_groups(&psalm.stanzas), psalm.meter)
+                    let slides = if slide_breaks.is_empty() {
+                        propose_psalm_groups(&psalm.stanzas)
+                    } else {
+                        slide_breaks.clone()
+                    };
+                    (slides, psalm.meter)
                 } else {
                     (slide_breaks.clone(), String::new())
                 };
@@ -339,12 +344,16 @@ pub fn propose_psalm_groups(stanzas: &[String]) -> Vec<String> {
 impl Psalm {
     pub fn find(reference: &str) -> anyhow::Result<Self> {
         static RE: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(r"^(?:Psalm )?(\d{1,3})(?::([1-9]\d{0,2})-([1-9]\d{0,2}))?(?:\s\(([a-zA-Z])\))?(?:\s\((\d{1,2})\))?$")
+            Regex::new(r"(?i)^(?:Psalm\s+)?(\d{1,3})(?::([1-9]\d{0,2})-([1-9]\d{0,2}))?(?:\s\(([a-z])\))?(?:\s\((\d{1,2})\))?$")
                 .expect("valid psalm reference regex")
         });
 
+        let reference = reference
+            .trim()
+            .replace(['\u{2013}', '\u{2014}', '\u{2212}'], "-");
+
         let caps = RE
-            .captures(reference)
+            .captures(&reference)
             .ok_or_else(|| anyhow!("invalid psalm reference: {reference}"))?;
         let number = caps.get(1).expect("psalm number").as_str();
         let version = caps.get(4).map(|m| m.as_str()).unwrap_or("a");
@@ -356,7 +365,7 @@ impl Psalm {
         let end = caps
             .get(3)
             .and_then(|m| m.as_str().parse::<u16>().ok())
-            .unwrap_or(if section.is_some() { 300 } else { 30 });
+            .unwrap_or(300);
 
         let entry = PSALMS
             .iter()
@@ -375,7 +384,7 @@ impl Psalm {
             return Err(anyhow!("no stanzas found for {reference}"));
         }
         Ok(Self {
-            title: reference.to_string(),
+            title: reference,
             meter: entry.content.meter.clone(),
             stanzas,
         })

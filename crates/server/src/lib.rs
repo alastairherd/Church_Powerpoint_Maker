@@ -12,8 +12,9 @@ use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use chrono::{Duration as ChronoDuration, NaiveDate, Utc};
 use deck_builder::{
-    build_deck, Catechism, FixedComponent, GeneratedDeckVersion, GlobalSettingsVersion, Psalm,
-    ServiceLease, ServicePreset, ServiceRecord, ServiceStatus, Sources, StoredSong,
+    build_deck, propose_psalm_groups, Catechism, FixedComponent, GeneratedDeckVersion,
+    GlobalSettingsVersion, Psalm, ServiceLease, ServicePreset, ServiceRecord, ServiceStatus,
+    Sources, StoredSong,
 };
 use hmac::{Hmac, Mac};
 use http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, ETAG, SET_COOKIE};
@@ -122,6 +123,7 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
         .route("/api/logout", post(logout))
         .route("/api/presets", get(list_presets))
         .route("/api/scripture", get(fetch_scripture))
+        .route("/api/psalm", get(fetch_psalm))
         .route("/api/songs", get(songs::list).post(songs::create))
         .route("/api/songs/:id", get(songs::get).delete(songs::archive))
         .route("/api/songs/:id/restore", post(songs::restore))
@@ -388,6 +390,30 @@ async fn fetch_scripture(
             "warning": format!("ESV text could not be fetched. Enter the text manually. {error}"),
         })),
     }
+}
+
+#[derive(Deserialize)]
+struct PsalmQuery {
+    reference: String,
+}
+
+async fn fetch_psalm(
+    State(state): State<AppState>,
+    Query(query): Query<PsalmQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let reference = query.reference.trim();
+    if reference.is_empty() {
+        return Err(AppError::bad_request("enter a Psalm reference first"));
+    }
+    let psalm = state
+        .sources
+        .psalm(reference)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    Ok(Json(json!({
+        "reference": psalm.title,
+        "meter": psalm.meter,
+        "slides": propose_psalm_groups(&psalm.stanzas),
+    })))
 }
 
 #[derive(Deserialize)]

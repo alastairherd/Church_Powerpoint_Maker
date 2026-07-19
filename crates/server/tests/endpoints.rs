@@ -152,6 +152,22 @@ async fn authenticated_navigation_renders_distinct_workspaces() {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains(marker), "{path}");
     }
+
+    let psalm = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/psalm?reference=Psalm%2023%3A1%E2%80%936")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(psalm.status(), StatusCode::OK);
+    let body = to_bytes(psalm.into_body(), usize::MAX).await.unwrap();
+    let psalm: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(psalm["meter"], "11 11 11");
+    assert!(!psalm["slides"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
