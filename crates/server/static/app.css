@@ -173,6 +173,11 @@ p { text-wrap: pretty; }
 .save-state span { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .save-state.saving { color: var(--warning); }
 .save-state.error { color: var(--error); }
+.save-controls { display: flex; align-items: center; gap: 12px; }
+.save-help { max-width: 42ch; margin: 3px 0 0; color: var(--error); font-size: 11px; }
+.save-conflict { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 22px; border-bottom: 1px solid #e4b7b7; background: #fff2f2; color: var(--error); }
+.save-conflict p { margin: 0; font-size: 12px; }
+.save-conflict-actions { display: flex; flex: 0 0 auto; gap: 8px; }
 .topbar-actions { display: flex; gap: 8px; }
 
 .button, .icon-button {
@@ -294,6 +299,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--focus); outline:
 .inline-action { display: flex; gap: 8px; align-items: end; }
 .inline-action label { flex: 1; }
 .inline-action .button { flex: 0 0 auto; }
+.loader-error { margin: 0; color: var(--error); font-size: 11px; }
+.loader-error[hidden] { display: none; }
 
 .notice-editor { display: grid; gap: 8px; }
 .notice-row { display: grid; grid-template-columns: 110px 1fr 1.4fr auto; gap: 7px; align-items: start; }

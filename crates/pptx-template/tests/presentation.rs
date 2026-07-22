@@ -1,7 +1,6 @@
 use pptx_template::{Presentation, Run};
 
 const TEMPLATE: &[u8] = include_bytes!("../../deck-builder/assets/template.pptx");
-const LEGACY_SERVICE: &[u8] = include_bytes!("../../../legacy/python/example_from_template.pptx");
 
 #[test]
 fn round_trip_preserves_slide_relationship_integrity() {
@@ -102,11 +101,11 @@ fn multiline_text_creates_real_powerpoint_paragraphs() {
 
 #[test]
 fn imports_complete_slides_from_another_presentation_in_order() {
-    let source = Presentation::open_bytes(LEGACY_SERVICE).expect("open source presentation");
+    let source = Presentation::open_bytes(TEMPLATE).expect("open source presentation");
     let mut destination = Presentation::open_bytes(TEMPLATE).expect("open destination");
     let original_count = destination.slide_count();
     let imported = destination
-        .import_slides(LEGACY_SERVICE)
+        .import_slides(TEMPLATE)
         .expect("import source slides");
 
     assert_eq!(imported.len(), source.slide_count());

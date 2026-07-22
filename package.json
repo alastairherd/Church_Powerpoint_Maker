@@ -1,0 +1,15 @@
+{
+  "name": "church-powerpoint-editor-tests",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:focused": "vitest run tests/editor-controller.test.js tests/editor-rendering.test.js tests/editor-loaders.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0",
+    "vitest": "3.2.4"
+  }
+}

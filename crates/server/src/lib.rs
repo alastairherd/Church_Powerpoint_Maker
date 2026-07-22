@@ -148,6 +148,10 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
         .route("/healthz", get(healthz))
         .route("/static/app.css", get(stylesheet))
         .route("/static/app.js", get(javascript))
+        .route(
+            "/static/editor-controller.js",
+            get(editor_controller_javascript),
+        )
         .route("/static/library.js", get(library_javascript))
         .route("/static/admin.js", get(admin_javascript))
         .route("/favicon.svg", get(favicon))
@@ -174,6 +178,13 @@ async fn javascript() -> impl IntoResponse {
     (
         [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
         include_str!("../static/app.js"),
+    )
+}
+
+async fn editor_controller_javascript() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("../static/editor-controller.js"),
     )
 }
 

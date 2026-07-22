@@ -31,13 +31,28 @@
       <header class="topbar">
         <div>
           <p class="breadcrumbs">Services <span>/</span> <strong id="crumb-name">New service</strong></p>
-          <div class="save-state" id="save-state" aria-live="polite"><span></span> All changes saved</div>
+          <div class="save-controls">
+            <div>
+               <div class="save-state" id="save-state" aria-live="polite" role="status"><span></span> Saved</div>
+               <p id="save-help" class="save-help" hidden></p>
+               <button class="button button-secondary conflict-recovery" id="conflict-recovery" type="button" hidden>Review conflict and reload</button>
+             </div>
+            <button class="button button-secondary" id="save-now" type="button">Save now</button>
+          </div>
         </div>
         <div class="topbar-actions">
           <button class="button button-secondary" id="review-service" type="button">Review service</button>
           <button class="button button-primary" id="generate-service" type="button">Generate PowerPoint</button>
         </div>
       </header>
+
+      <section id="save-conflict" class="save-conflict" hidden role="alert" aria-labelledby="save-conflict-message">
+        <p id="save-conflict-message"></p>
+        <div class="save-conflict-actions">
+          <button class="button button-secondary" id="keep-editing" type="button">Keep editing</button>
+          <button class="button button-primary" id="reload-service" type="button">Reload service</button>
+        </div>
+      </section>
 
       <section class="builder" aria-label="Service editor">
         <div class="order-panel">

@@ -24,9 +24,7 @@ impl Sources for MockSources {
             title: "Source presentation".into(),
             slides: Vec::new(),
             credits: String::new(),
-            source_pptx: Some(
-                include_bytes!("../../../legacy/python/example_from_template.pptx").to_vec(),
-            ),
+            source_pptx: Some(include_bytes!("../assets/template.pptx").to_vec()),
         })
     }
 }
@@ -162,10 +160,8 @@ async fn imports_original_song_slides_instead_of_rebuilding_their_text() {
         credits: String::new(),
     }];
 
-    let source = Presentation::open_bytes(include_bytes!(
-        "../../../legacy/python/example_from_template.pptx"
-    ))
-    .expect("source opens");
+    let source =
+        Presentation::open_bytes(include_bytes!("../assets/template.pptx")).expect("source opens");
     let bytes = build_deck(&service, &MockSources, "522221")
         .await
         .expect("deck builds");

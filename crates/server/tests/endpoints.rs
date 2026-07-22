@@ -171,6 +171,128 @@ async fn authenticated_navigation_renders_distinct_workspaces() {
 }
 
 #[tokio::test]
+async fn serves_the_editor_controller_module() {
+    let (app, cookie, _) = authenticated().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/static/editor-controller.js")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("createEditorController"));
+}
+
+#[tokio::test]
+async fn scripture_and_psalm_shapes_match_editor_loaders() {
+    let (app, cookie, _) = authenticated().await;
+    let scripture = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/scripture?reference=Psalm%2096%3A2")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(scripture.status(), StatusCode::OK);
+    let body = to_bytes(scripture.into_body(), usize::MAX).await.unwrap();
+    let scripture: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(scripture["ok"], true);
+    assert_eq!(scripture["reference"], "Psalm 96:2");
+    assert!(scripture["text"].is_string());
+
+    let psalm = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/psalm?reference=Psalm%2023%3A1%E2%80%936")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(psalm.status(), StatusCode::OK);
+    let body = to_bytes(psalm.into_body(), usize::MAX).await.unwrap();
+    let psalm: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(psalm["reference"].is_string());
+    assert!(psalm["meter"].is_string());
+    assert!(psalm["slides"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(serde_json::Value::is_string));
+}
+
+#[tokio::test]
+async fn stale_autosave_returns_a_conflict_error_shape() {
+    let (app, cookie, csrf) = authenticated().await;
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/services")
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Stale test","date":"2026-07-19","preset":"am"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(created.into_body(), usize::MAX).await.unwrap();
+    let mut service: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let id = service["id"].as_str().unwrap().to_string();
+
+    let locked = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/services/{id}/lock"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(locked.into_body(), usize::MAX).await.unwrap();
+    let lease: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let token = lease["token"].as_str().unwrap();
+    service["revision"] = serde_json::json!(999);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/services/{id}/autosave"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("x-lease-token", token)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&service).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(body["error"].is_string());
+}
+
+#[tokio::test]
 async fn song_catalogue_selection_resolves_during_generation() {
     let (app, cookie, csrf) = authenticated().await;
     let created_song = app
