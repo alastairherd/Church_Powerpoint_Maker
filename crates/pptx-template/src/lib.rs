@@ -740,6 +740,7 @@ impl Presentation {
     pub fn validate(&self) -> Result<()> {
         let content_types = self.part_string(CONTENT_TYPES)?;
         let pres_rels = self.part_string(PRESENTATION_RELS)?;
+        self.validate_notes_master_reference(&pres_rels)?;
         let mut visited = HashSet::new();
         for slide in &self.slides {
             if !self.files.contains_key(&slide.part) {
@@ -760,6 +761,28 @@ impl Presentation {
             }
             self.validate_slide_relationships(slide)?;
             self.validate_part_graph(&slide.part, &content_types, &mut visited)?;
+        }
+        Ok(())
+    }
+
+    fn validate_notes_master_reference(&self, pres_rels: &str) -> Result<()> {
+        let relationship_ids = relationship_tags(pres_rels)
+            .into_iter()
+            .filter_map(|tag| attr(&tag, "Id"))
+            .collect::<HashSet<_>>();
+        let presentation = self.part_string(PRESENTATION)?;
+        let notes_master = Regex::new(r#"<p:notesMasterId\b[^>]*>"#)
+            .expect("valid notes master regex");
+        for tag in notes_master.find_iter(&presentation) {
+            let tag = tag.as_str();
+            let relationship_id = attr(tag, "r:id").ok_or_else(|| {
+                Error::InvalidPackage("notes master declaration missing relationship".into())
+            })?;
+            if !relationship_ids.contains(&relationship_id) {
+                return Err(Error::InvalidPackage(format!(
+                    "notes master declaration references missing relationship {relationship_id}"
+                )));
+            }
         }
         Ok(())
     }
@@ -1169,12 +1192,22 @@ fn drop_auxiliary_relationship(relationship_type: &str) -> bool {
 }
 
 fn strip_relationship_reference(xml: &str, relationship_id: &str) -> String {
+    let notes_master = Regex::new(&format!(
+        r#"<p:notesMasterId\b[^>]*r:id="{}"[^>]*/>\s*"#,
+        regex::escape(relationship_id)
+    ))
+    .expect("valid notes master relationship regex");
+    let empty_notes_master_list =
+        Regex::new(r#"(?s)<p:notesMasterIdLst>\s*</p:notesMasterIdLst>"#)
+            .expect("valid empty notes master list regex");
     let reference = Regex::new(&format!(
         r#"\s+r:(?:id|embed|link)="{}""#,
         regex::escape(relationship_id)
     ))
     .expect("valid relationship reference regex");
-    reference.replace_all(xml, "").to_string()
+    let xml = notes_master.replace_all(xml, "");
+    let xml = empty_notes_master_list.replace_all(&xml, "");
+    reference.replace_all(&xml, "").to_string()
 }
 
 fn replace_xml_attr(tag: &str, name: &str, value: &str) -> String {

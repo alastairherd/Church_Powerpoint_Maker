@@ -140,6 +140,10 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
         .route("/api/services/:id/autosave", put(update_service))
         .route("/api/services/:id/generate", post(generate_service))
         .route("/api/services/:id/history", get(service_history))
+        .route(
+            "/api/services/:id/revisions/:revision/download",
+            get(download_service_revision),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_staff))
         .with_state(state.clone());
 
@@ -646,17 +650,6 @@ async fn generate_service(
     )
     .await?;
 
-    let safe_name = service
-        .name
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '-' {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
     let mut response = Response::new(Body::from(bytes));
     response
         .headers_mut()
@@ -664,8 +657,8 @@ async fn generate_service(
     response.headers_mut().insert(
         CONTENT_DISPOSITION,
         HeaderValue::from_str(&format!(
-            "attachment; filename=\"{}-{}-r{}.pptx\"",
-            safe_name, service.date, revision
+            "attachment; filename=\"{}\"",
+            deck_filename(&service, revision)
         ))
         .map_err(|error| AppError::internal(error.to_string()))?,
     );
@@ -688,6 +681,51 @@ async fn service_history(
     }
     revisions.sort_by_key(|revision: &GeneratedDeckVersion| revision.revision);
     Ok(Json(revisions))
+}
+
+async fn download_service_revision(
+    State(state): State<AppState>,
+    Path((id, revision)): Path<(String, u64)>,
+) -> Result<Response, AppError> {
+    let (service, _) = load_service(&state, &id).await?;
+    let metadata_object = state
+        .store
+        .get(&format!("entities/services/{id}/revisions/{revision}.json"))
+        .await?;
+    let metadata: GeneratedDeckVersion = serde_json::from_slice(&metadata_object.bytes)?;
+    if metadata.service_id != id || metadata.revision != revision {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "record not found"));
+    }
+    let deck = state.store.get(&metadata.object_key).await?;
+
+    let mut response = Response::new(Body::from(deck.bytes));
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(PPTX_CONTENT_TYPE));
+    response.headers_mut().insert(
+        CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!(
+            "attachment; filename=\"{}\"",
+            deck_filename(&service, revision)
+        ))
+        .map_err(|error| AppError::internal(error.to_string()))?,
+    );
+    Ok(response)
+}
+
+fn deck_filename(service: &ServiceRecord, revision: u64) -> String {
+    let safe_name = service
+        .name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    format!("{}-{}-r{}.pptx", safe_name, service.date, revision)
 }
 
 async fn get_settings(

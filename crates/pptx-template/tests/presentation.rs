@@ -1,4 +1,6 @@
 use pptx_template::{Presentation, Run};
+use std::io::Read;
+use zip::ZipArchive;
 
 const TEMPLATE: &[u8] = include_bytes!("../../deck-builder/assets/template.pptx");
 
@@ -18,6 +20,27 @@ fn canonical_template_has_exact_twpc_dimensions() {
     assert_eq!(pres.slide_size().unwrap(), (10_080_625, 7_559_675));
     pres.validate_song_source((10_080_625, 7_559_675))
         .expect("canonical template is a valid source package");
+}
+
+#[test]
+fn removing_auxiliary_content_removes_notes_master_declaration() {
+    let mut pres = Presentation::open_bytes(TEMPLATE).expect("open template");
+    pres.remove_auxiliary_content()
+        .expect("remove auxiliary content");
+    let bytes = pres.save_bytes().expect("save cleaned template");
+
+    let mut archive = ZipArchive::new(std::io::Cursor::new(&bytes)).expect("open saved package");
+    let mut presentation_xml = String::new();
+    archive
+        .by_name("ppt/presentation.xml")
+        .expect("presentation XML exists")
+        .read_to_string(&mut presentation_xml)
+        .expect("presentation XML is UTF-8");
+    assert!(!presentation_xml.contains("<p:notesMasterId/>"));
+    assert!(!presentation_xml.contains("<p:notesMasterId"));
+
+    let reopened = Presentation::open_bytes(&bytes).expect("reopen cleaned package");
+    reopened.validate().expect("cleaned package validates");
 }
 
 #[test]

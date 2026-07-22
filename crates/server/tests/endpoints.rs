@@ -3,6 +3,7 @@ use argon2::{Argon2, PasswordHasher};
 use async_trait::async_trait;
 use axum::body::{to_bytes, Body};
 use deck_builder::{Scripture, Sources};
+use http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use http::{Request, StatusCode};
 use pptx_template::Presentation;
 use server::{app_with_sources, AppConfig};
@@ -534,4 +535,32 @@ async fn creates_locks_and_generates_an_immutable_revision() {
     let revisions: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(revisions.as_array().unwrap().len(), 1);
     assert_eq!(revisions[0]["revision"], 1);
+
+    let downloaded = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/services/{id}/revisions/1/download"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(downloaded.status(), StatusCode::OK);
+    assert_eq!(
+        downloaded.headers().get(CONTENT_TYPE).unwrap().to_str().unwrap(),
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    );
+    assert_eq!(
+        downloaded
+            .headers()
+            .get(CONTENT_DISPOSITION)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "attachment; filename=\"Morning-service-2026-07-12-r1.pptx\""
+    );
+    let body = to_bytes(downloaded.into_body(), usize::MAX).await.unwrap();
+    assert!(body.starts_with(b"PK"));
+    Presentation::open_bytes(&body).unwrap().validate().unwrap();
 }

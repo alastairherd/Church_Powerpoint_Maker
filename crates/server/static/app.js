@@ -26,12 +26,13 @@ export function createEditorApp({
     'component-list', 'component-count', 'slide-count', 'review-slides', 'editor-panel',
     'validation-list', 'readiness-score', 'readiness-bar', 'save-state', 'save-help',
     'save-now', 'save-conflict', 'save-conflict-message', 'conflict-recovery', 'reload-service', 'keep-editing',
-    'new-dialog', 'preset-choices', 'review-dialog', 'review-title', 'full-review', 'toast',
+    'new-dialog', 'preset-choices', 'review-dialog', 'review-title', 'full-review', 'history-list', 'toast',
     'new-service', 'create-service', 'review-service', 'generate-service', 'review-generate',
     'add-component', 'sign-out',
   ].map(id => [id, doc.getElementById(id)]));
   let presets = [];
   let controller;
+  let history = [];
   let toastTimer = null;
   let booted = false;
 
@@ -149,6 +150,48 @@ export function createEditorApp({
     renderEditor();
     updateCounts();
     renderValidation();
+    renderHistory();
+  }
+
+  function renderHistory() {
+    if (!ui['history-list']) return;
+    ui['history-list'].replaceChildren();
+    if (!history.length) {
+      const empty = doc.createElement('p');
+      empty.className = 'field-note';
+      empty.textContent = 'No generated files yet.';
+      ui['history-list'].append(empty);
+      return;
+    }
+    [...history].reverse().forEach(revision => {
+      const row = doc.createElement('div');
+      row.className = 'history-row';
+      const details = doc.createElement('div');
+      const title = doc.createElement('strong');
+      title.textContent = `Revision ${revision.revision}`;
+      const date = doc.createElement('small');
+      date.textContent = new Date(revision.generated_at).toLocaleString();
+      details.append(title, date);
+      const download = doc.createElement('a');
+      download.className = 'button button-secondary history-download';
+      download.href = `/api/services/${encodeURIComponent(controller.getService().id)}/revisions/${revision.revision}/download`;
+      download.download = '';
+      download.textContent = 'Download';
+      download.setAttribute('aria-label', `Download revision ${revision.revision}`);
+      row.append(details, download);
+      ui['history-list'].append(row);
+    });
+  }
+
+  async function loadHistory() {
+    const service = controller.getService();
+    if (!service) return;
+    const serviceId = service.id;
+    const response = await request(`/api/services/${encodeURIComponent(serviceId)}/history`);
+    const loaded = await response.json();
+    if (controller.getService()?.id !== serviceId) return;
+    history = loaded;
+    renderHistory();
   }
 
   function renderOrder() {
@@ -531,12 +574,15 @@ export function createEditorApp({
   }
 
   async function loadService(record, options) {
+    history = [];
     const result = await controller.loadService(record, options);
     if (controller.getState().status === 'Saved') {
       setSaveState('Saved', 'Saved');
       setSaveHelp('');
     }
     renderConflict(controller.getState().conflict);
+    renderHistory();
+    await loadHistory().catch(error => showToast(error.message));
     return result;
   }
 
@@ -613,6 +659,7 @@ export function createEditorApp({
       timers.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
       service.status = 'completed'; controller.getState().lease = null; service.lease = null;
       setSaveState('Saved', 'PowerPoint generated'); showToast('PowerPoint generated and saved to service history.'); ui['review-dialog']?.close();
+      await loadHistory();
     } catch (error) {
       setSaveState('Failed', 'Failed');
       setSaveHelp(`Generation failed: ${error.message}`);

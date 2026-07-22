@@ -281,6 +281,16 @@ input:focus, select:focus, textarea:focus { border-color: var(--focus); outline:
 }
 .add-component:hover { border-color: var(--blue); background: #edf4f8; }
 
+.history { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+.history .panel-heading { margin-bottom: 9px; }
+.history h2 { font-size: 15px; }
+.history-list { display: grid; gap: 6px; }
+.history-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; }
+.history-row strong, .history-row small { display: block; }
+.history-row strong { font-size: 12px; }
+.history-row small { margin-top: 1px; color: var(--ink-soft); font-size: 10px; }
+.history-download { min-height: 30px; padding: 5px 8px; font-size: 11px; white-space: nowrap; }
+
 .editor-card {
   max-width: 760px;
   margin: 0 auto;
