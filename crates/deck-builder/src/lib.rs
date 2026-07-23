@@ -235,9 +235,6 @@ pub async fn build_deck(
                     vec!["Choose a psalm passage".to_string()]
                 } else {
                     slides
-                        .into_iter()
-                        .flat_map(|slide| textproc::split_lines(&slide, 6, usize::MAX))
-                        .collect()
                 };
                 let count = slides.len();
                 for (index, stanza) in slides.into_iter().enumerate() {
@@ -253,7 +250,7 @@ pub async fn build_deck(
                         pres.copy_shape(SEED_SONG_FINAL, "TextBox 4", slide, "Psalm Credits")?;
                         pres.slide_mut(slide)?
                             .shape("Psalm Credits")?
-                            .set_position(6366355, 5500000, 4146550, 1754326)?;
+                            .set_position(6724800, 6080400, 4146550, 1754326)?;
                         let tune_credit = tune
                             .as_ref()
                             .map(|pin| {
@@ -313,7 +310,7 @@ pub async fn build_deck(
                 }
                 let slide = clone_seed(&mut pres, SEED_TEACHING, "teaching")?;
                 set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
-                set_shape_text(&mut pres, slide, "TextShape 3", &resolved)?;
+                set_shape_runs(&mut pres, slide, "TextShape 3", &teaching_runs(&resolved))?;
             }
             ServiceComponent::LiturgyBlock {
                 heading, key, text, ..
@@ -380,7 +377,7 @@ pub fn paginate_notices(rows: &[NoticeRow], rows_per_slide: usize) -> Vec<String
                         .into_iter()
                         .filter(|part| !part.is_empty())
                         .collect::<Vec<_>>()
-                        .join(" · ");
+                        .join(" – ");
                     if row.details.trim().is_empty() {
                         lead
                     } else {
@@ -411,7 +408,7 @@ fn notice_runs(rows: &[NoticeRow]) -> Vec<Run> {
         let lead_separator = if when.is_empty() || title.is_empty() {
             ""
         } else {
-            " · "
+            " – "
         };
         if !when.is_empty() {
             runs.push(
@@ -422,7 +419,17 @@ fn notice_runs(rows: &[NoticeRow]) -> Vec<Run> {
         }
         if !lead_separator.is_empty() {
             runs.push(
-                Run::plain(lead_separator)
+                Run::plain(" ")
+                    .with_font_size(2800)
+                    .with_text_style("Arial Black", "accent1"),
+            );
+            runs.push(
+                Run::plain("–")
+                    .with_font_size(2800)
+                    .with_text_style("Arial Black", "000000"),
+            );
+            runs.push(
+                Run::plain(" ")
                     .with_font_size(2800)
                     .with_text_style("Arial Black", "accent1"),
             );
@@ -430,7 +437,7 @@ fn notice_runs(rows: &[NoticeRow]) -> Vec<Run> {
         if !title.is_empty() {
             let mut title_run = Run::plain(title).with_font_size(2800).with_text_style(
                 "Arial Black",
-                if row.emphasis { "accent1" } else { "000000" },
+                if row.emphasis { "FF0000" } else { "000000" },
             );
             title_run.bold = row.emphasis;
             runs.push(title_run);
@@ -439,8 +446,8 @@ fn notice_runs(rows: &[NoticeRow]) -> Vec<Run> {
             runs.push(Run::plain("\n"));
             runs.push(
                 Run::plain(details)
-                    .with_font_size(2200)
-                    .with_text_style("Arial", "000000"),
+                    .with_font_size(2800)
+                    .with_text_style("Arial Black", "000000"),
             );
         }
         if index + 1 < rows.len() {
@@ -452,36 +459,43 @@ fn notice_runs(rows: &[NoticeRow]) -> Vec<Run> {
 
 pub fn propose_psalm_groups(stanzas: &[String]) -> Vec<String> {
     const MAX_RENDERED_LINES: usize = 6;
-    const MAX_CHARACTERS: usize = 360;
+    const APPROXIMATE_CHARACTERS_PER_LINE: usize = 55;
 
     let mut groups = Vec::new();
     let mut current = String::new();
+    let mut current_lines = 0;
     for stanza in stanzas {
-        let separator = usize::from(!current.is_empty()) * 2;
-        let rendered_lines = current
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .count()
-            + stanza
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .count();
-        if !current.is_empty()
-            && (rendered_lines > MAX_RENDERED_LINES
-                || current.len() + separator + stanza.len() > MAX_CHARACTERS)
-        {
+        let stanza_lines = estimated_psalm_lines(stanza, APPROXIMATE_CHARACTERS_PER_LINE);
+        if !current.is_empty() && current_lines + stanza_lines > MAX_RENDERED_LINES {
             groups.push(current);
             current = String::new();
+            current_lines = 0;
         }
         if !current.is_empty() {
             current.push_str("\n\n");
         }
         current.push_str(stanza);
+        current_lines += stanza_lines;
     }
     if !current.is_empty() {
         groups.push(current);
     }
     groups
+}
+
+fn estimated_psalm_lines(text: &str, characters_per_line: usize) -> usize {
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let visible_characters = line
+                .replace("<underline>", "")
+                .replace("</underline>", "")
+                .chars()
+                .count();
+            visible_characters.div_ceil(characters_per_line).max(1)
+        })
+        .sum::<usize>()
+        .max(1)
 }
 
 impl Psalm {
@@ -631,16 +645,16 @@ fn psalm_runs(text: &str) -> Vec<Run> {
         };
         let Some(index) = next else {
             let mut run = Run::plain(remaining)
-                .with_font_size(2600)
-                .with_text_style("Arial", "000000");
+                .with_font_size(3200)
+                .with_text_style("Arial Black", "000000");
             run.underline = underlined;
             marked.push(run);
             break;
         };
         if index > 0 {
             let mut run = Run::plain(&remaining[..index])
-                .with_font_size(2600)
-                .with_text_style("Arial", "000000");
+                .with_font_size(3200)
+                .with_text_style("Arial Black", "000000");
             run.underline = underlined;
             marked.push(run);
         }
@@ -662,8 +676,8 @@ fn psalm_runs(text: &str) -> Vec<Run> {
             let is_superscript = superscript.is_some();
             if current_superscript.is_some_and(|value| value != is_superscript) {
                 let mut split = Run::plain(std::mem::take(&mut current))
-                    .with_font_size(2600)
-                    .with_text_style("Arial", "000000");
+                    .with_font_size(3200)
+                    .with_text_style("Arial Black", "000000");
                 split.underline = run.underline;
                 split.superscript = current_superscript.unwrap_or(false);
                 runs.push(split);
@@ -673,14 +687,69 @@ fn psalm_runs(text: &str) -> Vec<Run> {
         }
         if !current.is_empty() {
             let mut split = Run::plain(current)
-                .with_font_size(2600)
-                .with_text_style("Arial", "000000");
+                .with_font_size(3200)
+                .with_text_style("Arial Black", "000000");
             split.underline = run.underline;
             split.superscript = current_superscript.unwrap_or(false);
             runs.push(split);
         }
     }
     runs
+}
+
+fn teaching_runs(text: &str) -> Vec<Run> {
+    let text = text.replace("\r\n", "\n");
+    let paragraphs = text
+        .trim()
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|paragraph| !paragraph.is_empty())
+        .collect::<Vec<_>>();
+
+    let (question, answer) = if paragraphs.len() >= 2 {
+        (paragraphs[0].to_string(), paragraphs[1..].join("\n\n"))
+    } else {
+        split_teaching_answer(paragraphs.first().copied().unwrap_or_default())
+    };
+
+    let mut runs = Vec::new();
+    if !question.is_empty() {
+        runs.push(teaching_run(&question, "accent1"));
+    }
+    if !question.is_empty() && !answer.is_empty() {
+        runs.push(Run::plain("\n\n"));
+    }
+    if !answer.is_empty() {
+        runs.push(teaching_run(answer, "000000"));
+    }
+    runs
+}
+
+fn split_teaching_answer(text: &str) -> (String, String) {
+    static ANSWER_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^\s*(?:a(?:nswer)?\s*[.:]|answer\s+)")
+            .expect("valid teaching answer regex")
+    });
+    let lines = text.lines().collect::<Vec<_>>();
+    let answer_line = lines
+        .iter()
+        .position(|line| ANSWER_RE.is_match(line))
+        .filter(|index| *index > 0);
+    match answer_line {
+        Some(index) => (
+            lines[..index].join("\n").trim().to_string(),
+            lines[index..].join("\n").trim().to_string(),
+        ),
+        None => (text.trim().to_string(), String::new()),
+    }
+}
+
+fn teaching_run(text: impl Into<String>, color: &str) -> Run {
+    let mut run = Run::plain(text)
+        .with_font_size(3000)
+        .with_text_style("Arial Black", color);
+    run.bold = true;
+    run
 }
 
 fn normalise_superscript(character: char) -> Option<char> {
@@ -741,7 +810,8 @@ fn liturgy_runs(speaker: &str, text: &str, include_speaker: bool) -> Vec<Run> {
     if body.is_empty() {
         return runs;
     }
-    static AMEN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bAmen\.?$").expect("valid Amen regex"));
+    static AMEN_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)\bAmen[.!?…]*$").expect("valid Amen regex"));
     if let Some(amen) = AMEN_RE.find(body.trim_end()) {
         let body_end = body.trim_end().len();
         let prefix = &body[..amen.start()];
@@ -749,19 +819,19 @@ fn liturgy_runs(speaker: &str, text: &str, include_speaker: bool) -> Vec<Run> {
             runs.push(
                 Run::plain(prefix)
                     .with_font_size(4000)
-                    .with_text_style("Arial", "000000"),
+                    .with_text_style("Arial Black", "000000"),
             );
         }
         let mut amen_run = Run::plain(&body[amen.start()..body_end])
             .with_font_size(4000)
-            .with_text_style("Arial", "000000");
+            .with_text_style("Arial Black", "accent1");
         amen_run.bold = true;
         runs.push(amen_run);
     } else {
         runs.push(
             Run::plain(body)
                 .with_font_size(4000)
-                .with_text_style("Arial", "000000"),
+                .with_text_style("Arial Black", "000000"),
         );
     }
     runs
@@ -776,11 +846,9 @@ fn leading_liturgy_cue<'a>(text: &'a str, speaker: &str) -> (Option<String>, &'a
             || !text
                 .get(..candidate.len())
                 .is_some_and(|prefix| prefix.eq_ignore_ascii_case(candidate))
-            || !text
-                .get(candidate.len()..)
-                .is_none_or(|rest| {
-                    rest.is_empty() || rest.chars().next().is_some_and(char::is_whitespace)
-                })
+            || !text.get(candidate.len()..).is_none_or(|rest| {
+                rest.is_empty() || rest.chars().next().is_some_and(char::is_whitespace)
+            })
         {
             continue;
         }
@@ -876,6 +944,19 @@ mod tests {
         let pages = propose_psalm_groups(&stanzas);
         assert_eq!(pages.join("\n\n"), stanzas.join("\n\n"));
         assert_eq!(pages.len(), 2);
+    }
+
+    #[test]
+    fn psalm_grouping_never_splits_an_oversized_stanza() {
+        let oversized = (1..=8)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let stanzas = vec![oversized.clone(), "final stanza".to_string()];
+
+        let pages = propose_psalm_groups(&stanzas);
+
+        assert_eq!(pages, vec![oversized, "final stanza".to_string()]);
     }
 
     #[test]

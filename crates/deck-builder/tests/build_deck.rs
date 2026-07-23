@@ -77,7 +77,7 @@ async fn builds_valid_pptx_from_service_record() {
     pres.validate()
         .expect("generated deck is structurally valid");
     let mut zip = ZipArchive::new(Cursor::new(bytes)).expect("generated zip opens");
-    let mut liturgy_body_is_black_arial = false;
+    let mut liturgy_body_is_black_arial_black = false;
     for index in 0..zip.len() {
         let mut part = zip.by_index(index).expect("zip part");
         let name = part.name().to_string();
@@ -98,14 +98,16 @@ async fn builds_valid_pptx_from_service_record() {
         if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") {
             let mut xml = String::new();
             part.read_to_string(&mut xml).expect("slide xml is utf-8");
-            if xml.contains("typeface=\"Arial\"") && xml.contains("<a:srgbClr val=\"000000\"/>") {
-                liturgy_body_is_black_arial = true;
+            if xml.contains("typeface=\"Arial Black\"")
+                && xml.contains("<a:srgbClr val=\"000000\"/>")
+            {
+                liturgy_body_is_black_arial_black = true;
             }
         }
     }
     assert!(
-        liturgy_body_is_black_arial,
-        "liturgy body runs explicitly use black Arial"
+        liturgy_body_is_black_arial_black,
+        "liturgy body runs explicitly use black Arial Black"
     );
 }
 
@@ -151,14 +153,12 @@ async fn generated_content_keeps_template_hierarchy_and_safe_sizing() {
         ServiceComponent::Notices {
             id: "notices".into(),
             heading: "Notices".into(),
-            rows: vec![
-                deck_builder::NoticeRow {
-                    when: "Today".into(),
-                    title: "Notice title".into(),
-                    details: "Details remain readable".into(),
-                    emphasis: true,
-                },
-            ],
+            rows: vec![deck_builder::NoticeRow {
+                when: "Today".into(),
+                title: "Notice title".into(),
+                details: "Details remain readable".into(),
+                emphasis: true,
+            }],
         },
         ServiceComponent::CallToWorship {
             id: "call".into(),
@@ -197,14 +197,24 @@ async fn generated_content_keeps_template_hierarchy_and_safe_sizing() {
     let xml: Vec<_> = (0..pres.slide_count())
         .map(|index| pres.slide_xml(index).unwrap())
         .collect();
-    let notices = xml.iter().find(|slide| slide.contains("Notice title")).unwrap();
+    let notices = xml
+        .iter()
+        .find(|slide| slide.contains("Notice title"))
+        .unwrap();
     assert!(notices.contains("typeface=\"Arial Black\""));
-    assert!(notices.contains("typeface=\"Arial\""));
-    assert!(notices.contains("sz=\"2200\""));
+    assert!(!notices.contains("typeface=\"Arial\""));
+    assert!(!notices.contains("sz=\"2200\""));
     assert!(notices.contains("sz=\"2800\""));
     assert!(notices.contains("b=\"1\""));
+    assert!(notices.contains("<a:t>Today</a:t>") || notices.contains("<a:t>Today </a:t>"));
+    assert!(notices.contains("<a:t>–</a:t>"));
+    assert!(!notices.contains(" · "));
+    assert!(notices.contains("<a:t>Details remain readable</a:t>"));
 
-    let call = xml.iter().find(|slide| slide.contains("Sing to the LORD")).unwrap();
+    let call = xml
+        .iter()
+        .find(|slide| slide.contains("Sing to the LORD"))
+        .unwrap();
     assert!(!call.contains("[1]") && !call.contains("[2]"));
     assert!(!call.contains("baseline=\"30000\""));
     assert!(call.contains("Psalm 96:2"));
@@ -212,14 +222,32 @@ async fn generated_content_keeps_template_hierarchy_and_safe_sizing() {
     let liturgy = xml.iter().find(|slide| slide.contains("All.")).unwrap();
     assert!(liturgy.contains("typeface=\"Liberation Serif\""));
     assert!(liturgy.contains("schemeClr val=\"accent1\""));
-    assert!(liturgy.contains("typeface=\"Arial\""));
+    assert!(liturgy.contains("typeface=\"Arial Black\""));
+    assert!(!liturgy.contains("typeface=\"Arial\""));
     assert!(xml.iter().any(|slide| slide.contains("Amen.")));
+    let amen = xml.iter().find(|slide| slide.contains("Amen.")).unwrap();
+    assert!(amen.contains("<a:t>Amen.</a:t>"));
+    assert!(amen.contains("<a:schemeClr val=\"accent1\"/>") && amen.contains("b=\"1\""));
 
     let psalm = xml.iter().find(|slide| slide.contains("seven")).unwrap();
-    assert!(psalm.contains("sz=\"2600\""));
-    assert!(!psalm.contains("sz=\"3200\""));
-    assert!(psalm.contains("<a:off x=\"6366355\" y=\"5500000\"/>"));
-    assert!(xml.iter().any(|slide| slide.contains("What is the chief end of man?")));
+    assert!(psalm.contains("sz=\"3200\""));
+    assert!(!psalm.contains("sz=\"2600\""));
+    assert!(psalm.contains("typeface=\"Arial Black\""));
+    assert!(psalm.contains("<a:off x=\"6724800\" y=\"6080400\"/>"));
+    let teaching = xml
+        .iter()
+        .find(|slide| slide.contains("What is the chief end of man?"))
+        .unwrap();
+    assert!(teaching.contains("sz=\"3000\" b=\"1\"") || teaching.contains("b=\"1\" sz=\"3000\""));
+    assert!(teaching.contains("<a:t>What is the chief end of man?</a:t>"));
+    assert!(teaching
+        .contains("<a:t>Man&apos;s chief end is to glorify God, and to enjoy him forever.</a:t>"));
+    assert!(teaching.contains("<a:schemeClr val=\"accent1\"/>"));
+    assert!(teaching.contains("<a:srgbClr val=\"000000\"/>"));
+    assert!(
+        teaching.matches("<a:p>").count() >= 4,
+        "teaching keeps question/answer paragraphs"
+    );
 }
 
 #[test]
@@ -235,7 +263,10 @@ fn embedded_sources_resolve_catechism_psalm_and_fixed_component() {
     assert_eq!(psalm_with_typographic_dash.meter, "11 11 11");
     assert_eq!(psalm_with_typographic_dash.stanzas.len(), 5);
     for selection in ["1", "Q1", "Q. 1", "Question 1"] {
-        assert_eq!(deck_builder::parse_catechism_selection(selection).unwrap(), 1);
+        assert_eq!(
+            deck_builder::parse_catechism_selection(selection).unwrap(),
+            1
+        );
     }
 }
 
