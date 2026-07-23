@@ -28,7 +28,6 @@ export function makeService(overrides = {}) {
     preset: 'am',
     status: 'draft',
     revision: 4,
-    lease: { holder: 'Test Staff', token: 'lease-1', expires_at: '2099-01-01T00:00:00Z' },
     audit: { created_at: '2026-07-19T08:00:00Z', created_by: 'Test Staff', updated_at: '2026-07-19T08:00:00Z', updated_by: 'Test Staff' },
     components: [reading, psalm, call],
     ...overrides,
@@ -61,8 +60,9 @@ export function installBuilderDom(document) {
     <main>
       <a class="wordmark" href="/">Home</a>
       <a class="nav-link" href="/">Services</a>
-      <a class="nav-link" href="/library">Song library</a>
-      <a class="nav-link" href="/admin">Administration</a>
+       <a class="nav-link" href="/library">Song library</a>
+       <a class="nav-link" href="/generated">Generated PowerPoints</a>
+       <a class="nav-link" href="/admin">Administration</a>
       <button id="new-service"></button>
       <button id="create-service"></button>
       <button id="review-service"></button>
@@ -73,12 +73,6 @@ export function installBuilderDom(document) {
       <button id="save-now"></button>
       <div id="save-state" aria-live="polite"><span></span></div>
       <p id="save-help" hidden></p>
-      <button id="conflict-recovery" hidden></button>
-      <section id="save-conflict" hidden>
-        <p id="save-conflict-message"></p>
-        <button id="reload-service"></button>
-        <button id="keep-editing"></button>
-      </section>
       <input id="service-name">
       <input id="service-date">
       <select id="service-preset"></select>

@@ -77,11 +77,24 @@ async fn builds_valid_pptx_from_service_record() {
     pres.validate()
         .expect("generated deck is structurally valid");
     let mut zip = ZipArchive::new(Cursor::new(bytes)).expect("generated zip opens");
+    let mut liturgy_body_is_black_arial = false;
     for index in 0..zip.len() {
-        let name = zip.by_index(index).expect("zip part").name().to_string();
+        let mut part = zip.by_index(index).expect("zip part");
+        let name = part.name().to_string();
         assert!(!name.contains("notesSlide"), "notes are removed: {name}");
         assert!(!name.contains("notesMaster"), "notes are removed: {name}");
+        if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") {
+            let mut xml = String::new();
+            part.read_to_string(&mut xml).expect("slide xml is utf-8");
+            if xml.contains("typeface=\"Arial\"") && xml.contains("<a:srgbClr val=\"000000\"/>") {
+                liturgy_body_is_black_arial = true;
+            }
+        }
     }
+    assert!(
+        liturgy_body_is_black_arial,
+        "liturgy body runs explicitly use black Arial"
+    );
 }
 
 #[tokio::test]

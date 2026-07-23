@@ -42,6 +42,11 @@ fn test_app() -> axum::Router {
 
 async fn authenticated() -> (axum::Router, String, String) {
     let app = test_app();
+    let (cookie, csrf) = login(&app, "Test Staff").await;
+    (app, cookie, csrf)
+}
+
+async fn login(app: &axum::Router, display_name: &str) -> (String, String) {
     let response = app
         .clone()
         .oneshot(
@@ -49,7 +54,10 @@ async fn authenticated() -> (axum::Router, String, String) {
                 .method("POST")
                 .uri("/login")
                 .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from("display_name=Test+Staff&password=correct+horse"))
+                .body(Body::from(format!(
+                    "display_name={}&password=correct+horse",
+                    display_name.replace(' ', "+")
+                )))
                 .unwrap(),
         )
         .await
@@ -78,7 +86,7 @@ async fn authenticated() -> (axum::Router, String, String) {
         .as_str()
         .unwrap()
         .to_string();
-    (app, cookie, csrf)
+    (cookie, csrf)
 }
 
 #[tokio::test]
@@ -135,6 +143,7 @@ async fn authenticated_navigation_renders_distinct_workspaces() {
     for (path, marker) in [
         ("/", "Service order"),
         ("/library", "Choose and review stored songs"),
+        ("/generated", "Generated service decks"),
         ("/admin", "Staff settings"),
     ] {
         let response = app
@@ -255,22 +264,6 @@ async fn stale_autosave_returns_a_conflict_error_shape() {
     let mut service: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let id = service["id"].as_str().unwrap().to_string();
 
-    let locked = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/services/{id}/lock"))
-                .header("cookie", &cookie)
-                .header("x-csrf-token", &csrf)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let body = to_bytes(locked.into_body(), usize::MAX).await.unwrap();
-    let lease: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let token = lease["token"].as_str().unwrap();
     service["revision"] = serde_json::json!(999);
 
     let response = app
@@ -280,7 +273,6 @@ async fn stale_autosave_returns_a_conflict_error_shape() {
                 .uri(format!("/api/services/{id}/autosave"))
                 .header("cookie", &cookie)
                 .header("x-csrf-token", &csrf)
-                .header("x-lease-token", token)
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&service).unwrap()))
                 .unwrap(),
@@ -356,23 +348,6 @@ async fn song_catalogue_selection_resolves_during_generation() {
     let mut service: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let service_id = service["id"].as_str().unwrap().to_string();
 
-    let locked = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/services/{service_id}/lock"))
-                .header("cookie", &cookie)
-                .header("x-csrf-token", &csrf)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let body = to_bytes(locked.into_body(), usize::MAX).await.unwrap();
-    let lease: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let token = lease["token"].as_str().unwrap();
-
     let component = service["components"]
         .as_array_mut()
         .unwrap()
@@ -395,7 +370,6 @@ async fn song_catalogue_selection_resolves_during_generation() {
                 .uri(format!("/api/services/{service_id}"))
                 .header("cookie", &cookie)
                 .header("x-csrf-token", &csrf)
-                .header("x-lease-token", token)
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&service).unwrap()))
                 .unwrap(),
@@ -411,7 +385,6 @@ async fn song_catalogue_selection_resolves_during_generation() {
                 .uri(format!("/api/services/{service_id}/generate"))
                 .header("cookie", cookie)
                 .header("x-csrf-token", csrf)
-                .header("x-lease-token", token)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -462,7 +435,7 @@ async fn administration_versions_the_ccli_setting() {
 }
 
 #[tokio::test]
-async fn creates_locks_and_generates_an_immutable_revision() {
+async fn generates_an_immutable_revision_without_locking() {
     let (app, cookie, csrf) = authenticated().await;
     let created = app
         .clone()
@@ -485,23 +458,6 @@ async fn creates_locks_and_generates_an_immutable_revision() {
     let service: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let id = service["id"].as_str().unwrap();
 
-    let locked = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/services/{id}/lock"))
-                .header("cookie", &cookie)
-                .header("x-csrf-token", &csrf)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let body = to_bytes(locked.into_body(), usize::MAX).await.unwrap();
-    let lease: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let token = lease["token"].as_str().unwrap();
-
     let generated = app
         .clone()
         .oneshot(
@@ -510,7 +466,6 @@ async fn creates_locks_and_generates_an_immutable_revision() {
                 .uri(format!("/api/services/{id}/generate"))
                 .header("cookie", &cookie)
                 .header("x-csrf-token", &csrf)
-                .header("x-lease-token", token)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -535,6 +490,28 @@ async fn creates_locks_and_generates_an_immutable_revision() {
     let revisions: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(revisions.as_array().unwrap().len(), 1);
     assert_eq!(revisions[0]["revision"], 1);
+
+    let generated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/generated")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(generated.status(), StatusCode::OK);
+    let body = to_bytes(generated.into_body(), usize::MAX).await.unwrap();
+    let generated: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(generated.as_array().unwrap().len(), 1);
+    assert_eq!(generated[0]["service_name"], "Morning service");
+    assert_eq!(generated[0]["revision"], 1);
+    assert_eq!(
+        generated[0]["download_url"],
+        format!("/api/services/{id}/revisions/1/download")
+    );
 
     let downloaded = app
         .oneshot(

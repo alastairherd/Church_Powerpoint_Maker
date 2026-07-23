@@ -3,14 +3,12 @@ import { createEditorController } from '../crates/server/static/editor-controlle
 import { deferred, errorResponse, jsonResponse, makeService } from './helpers/editor-fixture.js';
 
 function loaderController(request, timers = { setTimeout, clearTimeout }) {
-  const lease = makeService().lease;
   return createEditorController({
-    request: async (url, options) => url.includes('/lock') ? jsonResponse(lease) : request(url, options),
+    request,
     timers,
     render: { all: vi.fn(), order: vi.fn(), editor: vi.fn(), validation: vi.fn(), orderItem: vi.fn(), counts: vi.fn(), heading: vi.fn(), loader: vi.fn() },
     setSaveState: vi.fn(),
     setSaveHelp: vi.fn(),
-    setConflict: vi.fn(),
     showToast: vi.fn(),
   });
 }

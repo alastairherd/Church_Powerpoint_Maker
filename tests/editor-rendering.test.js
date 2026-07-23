@@ -11,7 +11,7 @@ describe('editor render boundaries', () => {
     const service = makeService();
     const app = createEditorApp({
       document,
-      request: async url => url.includes('/lock') ? jsonResponse(service.lease) : jsonResponse(service),
+      request: async () => jsonResponse(service),
       timers: { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn(), setInterval: vi.fn(), clearInterval: vi.fn() },
     });
     await app.loadService(service);
@@ -32,7 +32,7 @@ describe('editor render boundaries', () => {
 
   it('updates a heading order item without rebuilding unrelated editor DOM', async () => {
     const service = makeService();
-    const app = createEditorApp({ document, request: async url => url.includes('/lock') ? jsonResponse(service.lease) : jsonResponse(service) });
+    const app = createEditorApp({ document, request: async () => jsonResponse(service) });
     await app.loadService(service);
     const list = document.getElementById('component-list');
     const editor = document.getElementById('editor-panel');
@@ -47,7 +47,7 @@ describe('editor render boundaries', () => {
 
   it('updates a Reading order summary without rebuilding the list or editor', async () => {
     const service = makeService();
-    const app = createEditorApp({ document, request: async url => url.includes('/lock') ? jsonResponse(service.lease) : jsonResponse(service) });
+    const app = createEditorApp({ document, request: async () => jsonResponse(service) });
     await app.loadService(service);
     const list = document.getElementById('component-list');
     const editor = document.getElementById('editor-panel');
@@ -62,7 +62,7 @@ describe('editor render boundaries', () => {
 
   it('updates a custom song title in its order summary without rebuilding the editor', async () => {
     const service = makeService({ components: [{ id: 'song-1', type: 'song', title: 'Old song', song: null, lyric_slides: ['Lyrics'], credits: '' }] });
-    const app = createEditorApp({ document, request: async url => url.includes('/lock') ? jsonResponse(service.lease) : jsonResponse(service) });
+    const app = createEditorApp({ document, request: async () => jsonResponse(service) });
     await app.loadService(service);
     const list = document.getElementById('component-list');
     const editor = document.getElementById('editor-panel');
@@ -82,7 +82,7 @@ describe('editor render boundaries', () => {
       { id: 'psalm-1', type: 'psalm', heading: 'Psalm', reference: 'Psalm 23:1–6', slide_breaks: ['First'] },
       { id: 'teaching-1', type: 'teaching', heading: 'Teaching', source: 'heidelberg1891', selection: 'Q1', text: 'Text' },
     ] });
-    const app = createEditorApp({ document, request: async url => url.includes('/lock') ? jsonResponse(service.lease) : jsonResponse(service) });
+    const app = createEditorApp({ document, request: async () => jsonResponse(service) });
     await app.loadService(service);
     const list = document.getElementById('component-list');
     const cases = [
@@ -107,7 +107,6 @@ describe('editor render boundaries', () => {
     const app = createEditorApp({
       document,
       request: async url => {
-        if (url.includes('/lock')) return jsonResponse(service.lease);
         if (url.includes('/psalm?')) return jsonResponse({ reference: 'Psalm 23:1–6', slides: ['First', 'Second'], meter: 'Common metre' });
         return jsonResponse(service);
       },
@@ -126,7 +125,6 @@ describe('editor render boundaries', () => {
     const app = createEditorApp({
       document,
       request: async url => {
-        if (url.includes('/lock')) return jsonResponse(service.lease);
         if (url.includes('/psalm?')) return errorResponse('Psalm unavailable', 503);
         return jsonResponse(service);
       },
@@ -154,7 +152,6 @@ describe('editor render boundaries', () => {
     const app = createEditorApp({
       document,
       request: async (url, options) => {
-        if (url.includes('/lock')) return jsonResponse(service.lease);
         if (url.includes('/autosave')) { saveStarted(); return pending.promise; }
         return jsonResponse(service);
       },
@@ -174,12 +171,11 @@ describe('editor render boundaries', () => {
     const save = app.controller().saveNow();
     await started;
     expect(state.className).toBe('save-state saving');
-    pending.resolve(jsonResponse({ ...service, revision: 5, lease: service.lease }));
+    pending.resolve(jsonResponse({ ...service, revision: 5 }));
     await save;
     expect(state.className).toBe('save-state ');
 
     const failingApp = createEditorApp({ document, request: async url => {
-      if (url.includes('/lock')) return jsonResponse(service.lease);
       if (url.includes('/autosave')) return errorResponse('save failed', 500);
       return jsonResponse(service);
     }});
@@ -191,79 +187,6 @@ describe('editor render boundaries', () => {
     expect(document.getElementById('save-state').className).toBe('save-state error');
   });
 
-  it('dismisses a conflict panel without enabling stale Save now or clearing the conflict', async () => {
-    const service = makeService();
-    let autosaves = 0;
-    const app = createEditorApp({
-      document,
-      request: async (url) => {
-        if (url.includes('/lock')) return jsonResponse(service.lease);
-        if (url.includes('/autosave')) {
-          autosaves += 1;
-          return errorResponse('this service changed in another browser; reload before saving', 409);
-        }
-        if (url === '/api/presets' || url === '/api/services') return jsonResponse([]);
-        return jsonResponse(service);
-      },
-      timers: { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn(), setInterval: vi.fn(), clearInterval: vi.fn() },
-    });
-    app.boot();
-    await app.loadService(service);
-    const reference = document.querySelector('[data-field="reference"]');
-    reference.value = 'John 3:16';
-    reference.dispatchEvent(new Event('input', { bubbles: true }));
-    await expect(app.controller().saveNow()).rejects.toThrow('another browser');
-
-    const saveNow = document.getElementById('save-now');
-    const conflict = document.getElementById('save-conflict');
-    expect(conflict.hidden).toBe(false);
-    expect(saveNow.disabled).toBe(true);
-    document.getElementById('keep-editing').click();
-    expect(conflict.hidden).toBe(true);
-    expect(saveNow.disabled).toBe(true);
-    expect(app.controller().getState().conflict).not.toBeNull();
-    const recovery = document.getElementById('conflict-recovery');
-    expect(recovery.hidden).toBe(false);
-    reference.value = 'John 3:17';
-    reference.dispatchEvent(new Event('input', { bubbles: true }));
-    expect(document.getElementById('save-help').textContent).toContain('reload');
-    expect(recovery.hidden).toBe(false);
-    recovery.click();
-    expect(conflict.hidden).toBe(false);
-    await expect(app.controller().saveNow()).rejects.toThrow('another browser');
-    expect(autosaves).toBe(1);
-  });
-
-  it('resolves a conflict only after confirmed reload replaces local data', async () => {
-    const service = makeService();
-    const reloaded = makeService({ components: [{ ...service.components[0], reference: 'Server version' }] });
-    const confirmImpl = vi.fn().mockReturnValue(true);
-    const app = createEditorApp({
-      document,
-      confirmImpl,
-      request: async (url) => {
-        if (url.includes('/lock')) return jsonResponse(service.lease);
-        if (url.includes('/autosave')) return errorResponse('this service changed in another browser; reload before saving', 409);
-        if (url === '/api/services/service-1') return jsonResponse(reloaded);
-        if (url === '/api/presets' || url === '/api/services') return jsonResponse([]);
-        return jsonResponse(service);
-      },
-      timers: { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn(), setInterval: vi.fn(), clearInterval: vi.fn() },
-    });
-    app.boot();
-    await app.loadService(service);
-    app.controller().updateComponent('reading-1', component => { component.reference = 'Local version'; });
-    await expect(app.controller().saveNow()).rejects.toThrow('another browser');
-    document.getElementById('reload-service').click();
-    await new Promise(resolve => setTimeout(resolve, 0));
-
-    expect(confirmImpl).toHaveBeenCalledWith('Reload this service and discard the current unsaved edits?');
-    expect(app.controller().getService().components[0].reference).toBe('Server version');
-    expect(app.controller().getState().conflict).toBeNull();
-    expect(document.getElementById('save-conflict').hidden).toBe(true);
-    expect(document.getElementById('save-now').disabled).toBe(false);
-  });
-
   it('guards dirty library navigation and beforeunload without hard-coded browser globals', async () => {
     const service = makeService();
     const location = { assign: vi.fn() };
@@ -273,7 +196,6 @@ describe('editor render boundaries', () => {
       locationImpl: location,
       confirmImpl,
       request: async (url) => {
-        if (url.includes('/lock')) return jsonResponse(service.lease);
         if (url.includes('/autosave')) return errorResponse('save unavailable', 503);
         if (url === '/api/presets' || url === '/api/services') return jsonResponse([]);
         return jsonResponse(service);
@@ -302,7 +224,6 @@ describe('editor render boundaries', () => {
     const app = createEditorApp({
       document,
       request: async url => {
-        if (url.includes('/lock')) return jsonResponse(service.lease);
         if (url.includes('/autosave')) return errorResponse('offline', 503);
         return jsonResponse(service);
       },
@@ -323,7 +244,6 @@ describe('editor render boundaries', () => {
       locationImpl: location,
       confirmImpl,
       request: async url => {
-        if (url.includes('/lock')) return jsonResponse(service.lease);
         if (url === '/api/presets' || url === '/api/services') return jsonResponse([]);
         if (url.includes('/autosave')) return errorResponse('save unavailable', 503);
         return jsonResponse(service);
@@ -332,12 +252,13 @@ describe('editor render boundaries', () => {
     app.boot();
     await app.loadService(service);
     app.controller().updateComponent('song-1', component => { component.title = 'Changed'; });
-    document.querySelector('[data-id="song-1"] .component-main').click();
+      document.querySelector('[data-id="song-1"] .component-main').click();
     const dynamicLibrary = [...document.querySelectorAll('a[href="/library"]')].find(link => link.textContent.includes('Browse'));
-    const destinations = [
-      document.querySelector('a[href="/"]'),
-      document.querySelector('a[href="/admin"]'),
-      document.querySelector('a[href="/library"]'),
+      const destinations = [
+        document.querySelector('a[href="/"]'),
+        document.querySelector('a[href="/admin"]'),
+        document.querySelector('a[href="/generated"]'),
+        document.querySelector('a[href="/library"]'),
       dynamicLibrary,
     ];
     for (const link of destinations) {
@@ -347,44 +268,12 @@ describe('editor render boundaries', () => {
       expect(click.defaultPrevented).toBe(true);
     }
     expect(location.assign).not.toHaveBeenCalled();
-    expect(confirmImpl).toHaveBeenCalledTimes(4);
-  });
-
-  it('clears conflict UI after confirmed reload even when lease renewal fails', async () => {
-    const service = makeService();
-    const reloaded = makeService({ components: [{ ...service.components[0], reference: 'Server version' }] });
-    let lockCalls = 0;
-    const confirmImpl = vi.fn().mockReturnValue(true);
-    const app = createEditorApp({
-      document,
-      confirmImpl,
-      request: async url => {
-        if (url.includes('/lock')) {
-          lockCalls += 1;
-          return lockCalls === 1 ? jsonResponse(service.lease) : errorResponse('lease expired', 423);
-        }
-        if (url.includes('/autosave')) return errorResponse('another browser', 409);
-        if (url === '/api/services/service-1') return jsonResponse(reloaded);
-        if (url === '/api/presets' || url === '/api/services') return jsonResponse([]);
-        return jsonResponse(service);
-      },
-    });
-    app.boot();
-    await app.loadService(service);
-    app.controller().updateComponent('reading-1', component => { component.reference = 'Local version'; });
-    await expect(app.controller().saveNow()).rejects.toThrow('another browser');
-    document.getElementById('reload-service').click();
-    await new Promise(resolve => setTimeout(resolve, 0));
-    expect(app.controller().getState().conflict).toBeNull();
-    expect(document.getElementById('save-conflict').hidden).toBe(true);
-    expect(document.getElementById('save-now').disabled).toBe(false);
-    expect(app.controller().getState().status).toBe('Failed');
-    expect(document.getElementById('save-help').textContent).toContain('lease expired');
+    expect(confirmImpl).toHaveBeenCalledTimes(5);
   });
 
   it('marks the Teaching source select with component and field metadata', async () => {
     const service = makeService({ components: [{ id: 'teaching-1', type: 'teaching', heading: 'Teaching', source: 'heidelberg1891', selection: 'Q1', text: 'Text' }] });
-    const app = createEditorApp({ document, request: async url => url.includes('/lock') ? jsonResponse(service.lease) : jsonResponse(service) });
+    const app = createEditorApp({ document, request: async () => jsonResponse(service) });
     await app.loadService(service);
     const source = document.querySelector('select[data-component-id="teaching-1"][data-field="source"]');
     expect(source).not.toBeNull();

@@ -25,14 +25,13 @@ export function createEditorApp({
     'service-name', 'service-date', 'service-preset', 'service-heading', 'crumb-name',
     'component-list', 'component-count', 'slide-count', 'review-slides', 'editor-panel',
     'validation-list', 'readiness-score', 'readiness-bar', 'save-state', 'save-help',
-    'save-now', 'save-conflict', 'save-conflict-message', 'conflict-recovery', 'reload-service', 'keep-editing',
-    'new-dialog', 'preset-choices', 'review-dialog', 'review-title', 'full-review', 'history-list', 'toast',
+    'save-now',
+    'new-dialog', 'preset-choices', 'review-dialog', 'review-title', 'full-review', 'toast',
     'new-service', 'create-service', 'review-service', 'generate-service', 'review-generate',
     'add-component', 'sign-out',
   ].map(id => [id, doc.getElementById(id)]));
   let presets = [];
   let controller;
-  let history = [];
   let toastTimer = null;
   let booted = false;
 
@@ -41,8 +40,6 @@ export function createEditorApp({
     const headers = new Headers(options.headers || {});
     const csrf = doc.querySelector('meta[name="csrf-token"]')?.content;
     if (csrf && !['GET', 'HEAD'].includes((options.method || 'GET').toUpperCase())) headers.set('x-csrf-token', csrf);
-    const leaseToken = controller?.getLease()?.token;
-    if (leaseToken) headers.set('x-lease-token', leaseToken);
     if (options.body && !(options.body instanceof FormData)) headers.set('content-type', 'application/json');
     const response = await fetchImpl(url, { ...options, headers });
     if (!response.ok) {
@@ -80,19 +77,6 @@ export function createEditorApp({
     if (!ui['save-help']) return;
     ui['save-help'].textContent = message || '';
     ui['save-help'].hidden = !message;
-  }
-
-  function renderConflict(error) {
-    if (!ui['save-conflict']) return;
-    ui['save-conflict'].hidden = !error;
-    if (ui['save-conflict-message']) ui['save-conflict-message'].textContent = error ? `Conflict: ${error.message}` : '';
-    if (ui['save-now']) ui['save-now'].disabled = Boolean(error || controller?.getState().conflict);
-  }
-
-  function renderConflictRecovery(error) {
-    if (!ui['conflict-recovery']) return;
-    ui['conflict-recovery'].hidden = !error;
-    ui['conflict-recovery'].textContent = error ? 'Review conflict and reload' : '';
   }
 
   function headingOf(component) {
@@ -150,48 +134,6 @@ export function createEditorApp({
     renderEditor();
     updateCounts();
     renderValidation();
-    renderHistory();
-  }
-
-  function renderHistory() {
-    if (!ui['history-list']) return;
-    ui['history-list'].replaceChildren();
-    if (!history.length) {
-      const empty = doc.createElement('p');
-      empty.className = 'field-note';
-      empty.textContent = 'No generated files yet.';
-      ui['history-list'].append(empty);
-      return;
-    }
-    [...history].reverse().forEach(revision => {
-      const row = doc.createElement('div');
-      row.className = 'history-row';
-      const details = doc.createElement('div');
-      const title = doc.createElement('strong');
-      title.textContent = `Revision ${revision.revision}`;
-      const date = doc.createElement('small');
-      date.textContent = new Date(revision.generated_at).toLocaleString();
-      details.append(title, date);
-      const download = doc.createElement('a');
-      download.className = 'button button-secondary history-download';
-      download.href = `/api/services/${encodeURIComponent(controller.getService().id)}/revisions/${revision.revision}/download`;
-      download.download = '';
-      download.textContent = 'Download';
-      download.setAttribute('aria-label', `Download revision ${revision.revision}`);
-      row.append(details, download);
-      ui['history-list'].append(row);
-    });
-  }
-
-  async function loadHistory() {
-    const service = controller.getService();
-    if (!service) return;
-    const serviceId = service.id;
-    const response = await request(`/api/services/${encodeURIComponent(serviceId)}/history`);
-    const loaded = await response.json();
-    if (controller.getService()?.id !== serviceId) return;
-    history = loaded;
-    renderHistory();
   }
 
   function renderOrder() {
@@ -574,33 +516,30 @@ export function createEditorApp({
   }
 
   async function loadService(record, options) {
-    history = [];
     const result = await controller.loadService(record, options);
     if (controller.getState().status === 'Saved') {
       setSaveState('Saved', 'Saved');
       setSaveHelp('');
     }
-    renderConflict(controller.getState().conflict);
-    renderHistory();
-    await loadHistory().catch(error => showToast(error.message));
     return result;
   }
 
   async function guardedLeave(leave) {
-    if (!controller.isDirty() && !controller.isSaving()) return leave();
-    try {
-      await controller.saveNow();
-      return leave();
-    } catch (error) {
-      const generation = controller.getState().editGeneration;
-      if (confirmImpl(`Generation ${generation} is not saved. Leave and discard local edits?`)) return leave();
+    if (controller.isDirty() || controller.isSaving()) {
+      try {
+        await controller.saveNow();
+      } catch (error) {
+        const generation = controller.getState().editGeneration;
+        if (!confirmImpl(`Generation ${generation} is not saved. Leave and discard local edits?`)) return;
+      }
     }
+    return leave();
   }
 
   function guardedNavigation(event) {
     const link = event.currentTarget;
     const destination = link?.getAttribute('href');
-    if (!link || !['/', '/library', '/admin'].includes(destination)) return;
+    if (!link || !['/', '/library', '/generated', '/admin'].includes(destination)) return;
     event.preventDefault();
     void guardedLeave(() => locationImpl?.assign(destination)).catch(error => showToast(error.message));
   }
@@ -644,9 +583,7 @@ export function createEditorApp({
   async function generate() {
     const service = controller.getService();
     try {
-      if (!controller.getLease()) throw new Error('This service is read-only. Reload it to acquire the editing lease.');
       await controller.saveNow();
-      await controller.renewLease();
       setSaveState('Saving', 'Generating PowerPoint…');
       const response = await request(`/api/services/${service.id}/generate`, { method: 'POST' });
       const blob = await response.blob();
@@ -657,9 +594,8 @@ export function createEditorApp({
       link.download = filename;
       link.click();
       timers.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-      service.status = 'completed'; controller.getState().lease = null; service.lease = null;
+      service.status = 'completed';
       setSaveState('Saved', 'PowerPoint generated'); showToast('PowerPoint generated and saved to service history.'); ui['review-dialog']?.close();
-      await loadHistory();
     } catch (error) {
       setSaveState('Failed', 'Failed');
       setSaveHelp(`Generation failed: ${error.message}`);
@@ -717,19 +653,8 @@ export function createEditorApp({
         locationImpl?.assign('/login');
       }).catch(error => showToast(error.message));
     });
-    doc.querySelectorAll('a[href="/"], a[href="/library"], a[href="/admin"]').forEach(link => {
+    doc.querySelectorAll('a[href="/"], a[href="/library"], a[href="/generated"], a[href="/admin"]').forEach(link => {
       link.addEventListener('click', guardedNavigation);
-    });
-    ui['keep-editing']?.addEventListener('click', () => controller.keepEditingAfterConflict());
-    ui['conflict-recovery']?.addEventListener('click', () => controller.reopenConflictControls());
-    ui['reload-service']?.addEventListener('click', () => {
-      if (!confirmImpl('Reload this service and discard the current unsaved edits?')) return;
-      const service = controller.getService();
-      if (!service) return;
-      void request(`/api/services/${service.id}`)
-        .then(response => response.json())
-        .then(record => loadService(record, { discardUnsaved: true }))
-        .catch(error => showToast(error.message));
     });
     ui['service-name']?.addEventListener('input', () => setServiceField('name', ui['service-name'].value, 'heading'));
     ui['service-date']?.addEventListener('input', () => setServiceField('date', ui['service-date'].value));
@@ -742,13 +667,6 @@ export function createEditorApp({
     doc.defaultView?.addEventListener('beforeunload', event => {
       if (controller.isDirty() || controller.isSaving()) { event.preventDefault(); event.returnValue = ''; }
     });
-    timers.setInterval(() => {
-      Promise.resolve(controller.renewLease()).catch(error => {
-        setSaveState('Failed', 'Editing lease could not be renewed');
-        setSaveHelp(error.message);
-        showToast(error.message);
-      });
-    }, 60_000);
     Promise.all([
       request('/api/presets').then(response => response.json()),
       request('/api/services').then(response => response.json()),
@@ -769,8 +687,6 @@ export function createEditorApp({
     render: { all: renderAll, order: renderOrder, editor: renderEditor, validation: renderValidation, orderItem: updateOrderItem, counts: updateCounts, heading: updateHeading, loader: renderLoaderState },
     setSaveState,
     setSaveHelp,
-    setConflict: renderConflict,
-    setConflictRecovery: renderConflictRecovery,
     showToast,
   });
 

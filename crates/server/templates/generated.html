@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf }}">
+  <title>Generated PowerPoints · TWPC</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="wordmark" href="/" aria-label="TWPC Service Builder home">
+        <span class="brand-mark" aria-hidden="true">TW</span>
+        <span><strong>TWPC</strong><small>Service Builder</small></span>
+      </a>
+      <nav aria-label="Main navigation">
+        <a class="nav-link" href="/"><span aria-hidden="true">◫</span> Services</a>
+        <a class="nav-link" href="/library"><span aria-hidden="true">♫</span> Song library</a>
+        <a class="nav-link active" href="/generated" aria-current="page"><span aria-hidden="true">▣</span> Generated PowerPoints</a>
+        <a class="nav-link" href="/admin"><span aria-hidden="true">⚙</span> Administration</a>
+      </nav>
+      <div class="sidebar-footer">
+        <span class="avatar" aria-hidden="true">{{ staff_initial }}</span>
+        <span><strong>{{ staff_name }}</strong><small>Staff</small></span>
+        <button class="icon-button sign-out" type="button" aria-label="Sign out">↗</button>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div><p class="breadcrumbs"><strong>Generated PowerPoints</strong></p><h1>Generated PowerPoints</h1></div>
+      </header>
+      <section class="page-content generated-page" aria-labelledby="generated-heading">
+        <div class="page-heading">
+          <div><h2 id="generated-heading">Generated service decks</h2><p>Download every retained PowerPoint revision, newest first.</p></div>
+          <p class="record-count" id="generated-count" aria-live="polite">Loading files…</p>
+        </div>
+        <div id="generated-results" class="generated-results" aria-live="polite" aria-busy="true">
+          <div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/static/generated.js"></script>
+</body>
+</html>

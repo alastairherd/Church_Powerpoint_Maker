@@ -37,7 +37,7 @@ describe('editor controller seam', () => {
   it('retains service and component identities while merging only server metadata', async () => {
     const service = makeService();
     const response = jsonResponse({ ...service, revision: 5, status: 'draft', audit: { updated_by: 'Server' }, components: structuredClone(service.components).reverse(), name: 'Server name' });
-    const controller = controllerWithFetch(async url => url.includes('/lock') ? jsonResponse(service.lease) : response);
+    const controller = controllerWithFetch(async () => response);
     await controller.loadService(service);
     const serviceIdentity = controller.getService();
     const componentsIdentity = service.components;
@@ -56,7 +56,7 @@ describe('editor controller seam', () => {
 
   it('increments a generation for every local edit and does not dirty on metadata merge', async () => {
     const service = makeService();
-    const controller = controllerWithFetch(async url => url.includes('/lock') ? jsonResponse(service.lease) : jsonResponse(service));
+    const controller = controllerWithFetch(async () => jsonResponse(service));
     await controller.loadService(service);
     controller.updateComponent('reading-1', component => { component.bible_page = 843; }, 'field');
     expect(controller.getState()).toMatchObject({ editGeneration: 1, savedGeneration: 0 });
@@ -74,7 +74,6 @@ describe('editor controller seam', () => {
     let resolveSecondStarted;
     const secondStarted = new Promise(resolve => { resolveSecondStarted = resolve; });
     const controller = controllerWithFetch(async (url, options) => {
-      if (url.includes('/lock')) return jsonResponse(service.lease);
       requests.push({ url, body: JSON.parse(options.body) });
       if (requests.length === 1) resolveFirstStarted();
       if (requests.length === 2) resolveSecondStarted();
@@ -87,10 +86,10 @@ describe('editor controller seam', () => {
     controller.updateComponent('reading-1', component => { component.reference = 'Romans 8:29'; });
     expect(requests).toHaveLength(1);
     expect(requests[0].body.components[0].reference).toBe('Romans 8:28');
-    first.resolve(jsonResponse({ ...service, revision: 5, lease: service.lease }));
+    first.resolve(jsonResponse({ ...service, revision: 5 }));
     await secondStarted;
     expect(requests).toHaveLength(2);
-    second.resolve(jsonResponse({ ...service, revision: 6, lease: service.lease }));
+    second.resolve(jsonResponse({ ...service, revision: 6 }));
     await save;
     expect(requests[1].body.components[0].reference).toBe('Romans 8:29');
     expect(controller.getState()).toMatchObject({ editGeneration: 2, savedGeneration: 2, status: 'Saved' });
@@ -104,11 +103,7 @@ describe('editor controller seam', () => {
     let resolveSaveStarted;
     const saveStarted = new Promise(resolve => { resolveSaveStarted = resolve; });
     let autosaveCount = 0;
-    const controller = controllerWithFetch(async (url) => {
-      if (url.includes('/lock')) {
-        events.push(`lock:${url}`);
-        return jsonResponse(nextService.lease);
-      }
+    const controller = controllerWithFetch(async () => {
       autosaveCount += 1;
       events.push(`save-start:${autosaveCount}`);
       resolveSaveStarted();
@@ -127,13 +122,11 @@ describe('editor controller seam', () => {
     const load = controller.loadService(nextService);
     await Promise.resolve();
     expect(controller.getService()).toBe(service);
-    expect(events).not.toContain('lock:/api/services/service-2/lock');
 
-    first.resolve(jsonResponse({ ...service, revision: 99, audit: { updated_by: 'Old save' }, lease: service.lease }));
+    first.resolve(jsonResponse({ ...service, revision: 99, audit: { updated_by: 'Old save' } }));
     await save;
     await load;
 
-    expect(events.indexOf('save-settled:1')).toBeLessThan(events.lastIndexOf('lock:/api/services/service-2/lock'));
     expect(controller.getService()).toBe(nextService);
     expect(nextService.revision).toBe(8);
     expect(nextService.audit.updated_by).toBe('Test Staff');
@@ -150,11 +143,7 @@ describe('editor controller seam', () => {
     const firstStarted = new Promise(resolve => { resolveFirstStarted = resolve; });
     let resolveSecondStarted;
     const secondStarted = new Promise(resolve => { resolveSecondStarted = resolve; });
-    const controller = controllerWithFetch(async (url, options) => {
-      if (url.includes('/lock')) {
-        events.push(`lock:${url}`);
-        return jsonResponse(nextService.lease);
-      }
+    const controller = controllerWithFetch(async (_url, options) => {
       requests.push(JSON.parse(options.body));
       events.push(`save-start:${requests.length}`);
       if (requests.length === 1) resolveFirstStarted();
@@ -173,18 +162,16 @@ describe('editor controller seam', () => {
     controller.updateComponent('reading-1', component => { component.reference = 'Romans 8:29'; });
     const load = controller.loadService(nextService);
 
-    first.resolve(jsonResponse({ ...service, revision: 5, lease: service.lease }));
+    first.resolve(jsonResponse({ ...service, revision: 5 }));
     await secondStarted;
     expect(controller.getService()).toBe(service);
-    expect(events).not.toContain('lock:/api/services/service-2/lock');
     expect(requests[0].components[0].reference).toBe('Romans 8:28');
     expect(requests[1].components[0].reference).toBe('Romans 8:29');
 
-    second.resolve(jsonResponse({ ...service, revision: 6, lease: service.lease }));
+    second.resolve(jsonResponse({ ...service, revision: 6 }));
     await save;
     await load;
 
-    expect(events.indexOf('save-settled:2')).toBeLessThan(events.lastIndexOf('lock:/api/services/service-2/lock'));
     expect(controller.getService()).toBe(nextService);
   });
 
@@ -193,8 +180,7 @@ describe('editor controller seam', () => {
     const nextService = makeService({ id: 'service-2', name: 'Evening service' });
     const first = deferred();
     let pendingTimer;
-    const controller = controllerWithFetch(async url => {
-      if (url.includes('/lock')) return jsonResponse(service.lease);
+    const controller = controllerWithFetch(async () => {
       return first.promise;
     }, {
       timers: {
@@ -225,10 +211,9 @@ describe('editor controller seam', () => {
     const timerDelays = [];
     let pendingTimer;
     let autosaveCount = 0;
-    const controller = controllerWithFetch(async (url) => {
-      if (url.includes('/lock')) return jsonResponse(service.lease);
+    const controller = controllerWithFetch(async () => {
       autosaveCount += 1;
-      return autosaveCount === 1 ? first.promise : jsonResponse({ ...service, revision: 6, lease: service.lease });
+      return autosaveCount === 1 ? first.promise : jsonResponse({ ...service, revision: 6 });
     }, {
       timers: {
         setTimeout: vi.fn((callback, delay) => {
@@ -253,7 +238,7 @@ describe('editor controller seam', () => {
     await Promise.resolve();
     expect(autosaveCount).toBe(1);
 
-    first.resolve(jsonResponse({ ...service, revision: 5, lease: service.lease }));
+    first.resolve(jsonResponse({ ...service, revision: 5 }));
     await controller.saveNow();
     expect(autosaveCount).toBe(2);
   });
@@ -263,8 +248,7 @@ describe('editor controller seam', () => {
     const first = deferred();
     const second = deferred();
     const puts = [];
-    const controller = controllerWithFetch(async (url, options) => {
-      if (url.includes('/lock')) return jsonResponse(service.lease);
+    const controller = controllerWithFetch(async (_url, options) => {
       puts.push(JSON.parse(options.body));
       return puts.length === 1 ? first.promise : second.promise;
     }, { timers: { setTimeout: vi.fn(() => 99), clearTimeout: vi.fn(), setInterval: vi.fn(), clearInterval: vi.fn() } });
@@ -273,10 +257,10 @@ describe('editor controller seam', () => {
     const firstSave = controller.saveNow();
     const joinedSave = controller.saveNow();
     expect(puts).toHaveLength(1);
-    first.resolve(jsonResponse({ ...service, revision: 5, lease: service.lease }));
+    first.resolve(jsonResponse({ ...service, revision: 5 }));
     await Promise.resolve();
     controller.updateComponent('reading-1', component => { component.reference = 'John 3:17'; });
-    second.resolve(jsonResponse({ ...service, revision: 6, lease: service.lease }));
+    second.resolve(jsonResponse({ ...service, revision: 6 }));
     await Promise.all([firstSave, joinedSave]);
     expect(puts).toHaveLength(2);
     expect(puts[1].components[0].reference).toBe('John 3:17');
@@ -286,11 +270,10 @@ describe('editor controller seam', () => {
     const service = makeService();
     const setSaveState = vi.fn();
     let attempts = 0;
-    const controller = controllerWithFetch(async url => {
-      if (url.includes('/lock')) return jsonResponse(service.lease);
+    const controller = controllerWithFetch(async () => {
       attempts += 1;
       if (attempts === 1) return new Response(JSON.stringify({ error: 'network down' }), { status: 503 });
-      return jsonResponse({ ...service, revision: 5, lease: service.lease });
+      return jsonResponse({ ...service, revision: 5 });
     }, { setSaveState });
     await controller.loadService(service);
     controller.updateComponent('reading-1', component => { component.reference = 'John 3:16'; });
@@ -309,8 +292,7 @@ describe('editor controller seam', () => {
       setTimeout: vi.fn(() => timers.setTimeout.mock.calls.length),
       clearTimeout: vi.fn(),
     };
-    const controller = controllerWithFetch(async url => {
-      if (url.includes('/lock')) return jsonResponse(service.lease);
+    const controller = controllerWithFetch(async () => {
       return first.promise;
     }, { timers });
 
@@ -328,73 +310,27 @@ describe('editor controller seam', () => {
 
   it('marks a 409 as an unresolved conflict that cannot be retried stale', async () => {
     const service = makeService();
-    const setConflict = vi.fn();
-    const controller = controllerWithFetch(async url => {
-      if (url.includes('/lock')) return jsonResponse(service.lease);
+    const setSaveHelp = vi.fn();
+    const showToast = vi.fn();
+    const controller = controllerWithFetch(async () => {
       return new Response(JSON.stringify({ error: 'this service changed in another browser; reload before saving' }), { status: 409 });
-    }, { setConflict });
+    }, { setSaveHelp, showToast });
     await controller.loadService(service);
     controller.updateComponent('reading-1', component => { component.reference = 'John 3:16'; });
     await expect(controller.saveNow()).rejects.toThrow('another browser');
-    expect(setConflict).toHaveBeenCalledOnce();
     await expect(controller.saveNow()).rejects.toThrow('another browser');
-    controller.keepEditingAfterConflict();
     expect(controller.getService().components[0].reference).toBe('John 3:16');
     expect(controller.isDirty()).toBe(true);
     expect(controller.getState().conflict).not.toBeNull();
-    expect(controller.getState().status).toBe('Unsaved');
-  });
-
-  it('keeps conflict recovery discoverable and preserves its guidance across later edits', async () => {
-    const service = makeService();
-    const setSaveHelp = vi.fn();
-    const setConflictRecovery = vi.fn();
-    const controller = controllerWithFetch(async url => {
-      if (url.includes('/lock')) return jsonResponse(service.lease);
-      return new Response(JSON.stringify({ error: 'another browser changed this service' }), { status: 409 });
-    }, { setSaveHelp, setConflictRecovery });
-    await controller.loadService(service);
-    controller.updateComponent('reading-1', component => { component.reference = 'John 3:16'; });
-    await expect(controller.saveNow()).rejects.toThrow('another browser');
-    const conflict = controller.getState().conflict;
-
-    controller.keepEditingAfterConflict();
-    controller.updateComponent('reading-1', component => { component.reference = 'John 3:17'; });
-
-    expect(controller.getState().conflict).toBe(conflict);
-    expect(setConflictRecovery).toHaveBeenLastCalledWith(conflict);
-    expect(setSaveHelp).toHaveBeenLastCalledWith(expect.stringContaining('reload'));
-    controller.reopenConflictControls();
-    expect(setConflictRecovery).toHaveBeenLastCalledWith(null);
-  });
-
-  it('joins a periodic lease renewal to the active save instead of starting a second lock request', async () => {
-    const service = makeService();
-    const saveResponse = deferred();
-    let lockCalls = 0;
-    const controller = controllerWithFetch(async url => {
-      if (url.includes('/lock')) {
-        lockCalls += 1;
-        return jsonResponse({ ...service.lease, expires_at: new Date(Date.now() + 120_000).toISOString(), token: `lease-${lockCalls}` });
-      }
-      return saveResponse.promise;
-    });
-    await controller.loadService(service);
-    controller.getLease().expires_at = new Date(Date.now() + 1_000).toISOString();
-    controller.updateComponent('reading-1', component => { component.reference = 'John 3:16'; });
-    const save = controller.saveNow();
-    const renewal = controller.renewLease();
-
-    expect(lockCalls).toBe(2);
-    saveResponse.resolve(jsonResponse({ ...service, revision: 5, lease: controller.getLease() }));
-    await Promise.all([save, renewal]);
-    expect(lockCalls).toBe(2);
+    expect(controller.getState().status).toBe('Failed');
+    expect(setSaveHelp).toHaveBeenLastCalledWith(expect.stringContaining('another browser'));
+    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('another browser'));
   });
 
   it('preserves optional metadata omitted by an older compatible save response', async () => {
     const service = makeService();
     const originalAudit = service.audit;
-    const controller = controllerWithFetch(async url => url.includes('/lock') ? jsonResponse(service.lease) : jsonResponse({ id: service.id, revision: 5, status: 'draft', components: [] }));
+    const controller = controllerWithFetch(async () => jsonResponse({ id: service.id, revision: 5, status: 'draft', components: [] }));
     await controller.loadService(service);
     controller.updateComponent('reading-1', component => { component.reference = 'John 3:16'; });
     await controller.saveNow();
@@ -402,21 +338,4 @@ describe('editor controller seam', () => {
     expect(controller.getService().components[0].reference).toBe('John 3:16');
   });
 
-  it('clears timer and active operation state after a lease renewal failure', async () => {
-    const service = makeService();
-    let lockCalls = 0;
-    const controller = controllerWithFetch(async url => {
-      if (url.includes('/lock')) {
-        lockCalls += 1;
-        return lockCalls === 1 ? jsonResponse(service.lease) : new Response(JSON.stringify({ error: 'lease expired' }), { status: 423 });
-      }
-      return jsonResponse(service);
-    });
-    await controller.loadService(service);
-    controller.getLease().expires_at = new Date(Date.now() + 1_000).toISOString();
-    controller.updateComponent('reading-1', component => { component.reference = 'John 3:16'; });
-    await expect(controller.saveNow()).rejects.toThrow('lease expired');
-    expect(controller.getState()).toMatchObject({ activeSave: null, saveTimer: null, status: 'Failed' });
-    expect(controller.isDirty()).toBe(true);
-  });
 });

@@ -18,6 +18,7 @@
       <nav aria-label="Main navigation">
         <a class="nav-link active" href="/" aria-current="page"><span aria-hidden="true">◫</span> Services</a>
         <a class="nav-link" href="/library"><span aria-hidden="true">♫</span> Song library</a>
+        <a class="nav-link" href="/generated"><span aria-hidden="true">▣</span> Generated PowerPoints</a>
         <a class="nav-link" href="/admin"><span aria-hidden="true">⚙</span> Administration</a>
       </nav>
       <div class="sidebar-footer">
@@ -35,8 +36,7 @@
             <div>
                <div class="save-state" id="save-state" aria-live="polite" role="status"><span></span> Saved</div>
                <p id="save-help" class="save-help" hidden></p>
-               <button class="button button-secondary conflict-recovery" id="conflict-recovery" type="button" hidden>Review conflict and reload</button>
-             </div>
+              </div>
             <button class="button button-secondary" id="save-now" type="button">Save now</button>
           </div>
         </div>
@@ -45,14 +45,6 @@
           <button class="button button-primary" id="generate-service" type="button">Generate PowerPoint</button>
         </div>
       </header>
-
-      <section id="save-conflict" class="save-conflict" hidden role="alert" aria-labelledby="save-conflict-message">
-        <p id="save-conflict-message"></p>
-        <div class="save-conflict-actions">
-          <button class="button button-secondary" id="keep-editing" type="button">Keep editing</button>
-          <button class="button button-primary" id="reload-service" type="button">Reload service</button>
-        </div>
-      </section>
 
       <section class="builder" aria-label="Service editor">
         <div class="order-panel">
@@ -77,12 +69,6 @@
           <ol class="component-list" id="component-list" aria-label="Ordered service components"></ol>
           <button class="add-component" id="add-component" type="button"><span aria-hidden="true">＋</span> Add component</button>
 
-          <section class="history" aria-labelledby="history-heading">
-            <div class="panel-heading compact">
-              <div><p class="section-label">Files</p><h2 id="history-heading">Generated PowerPoints</h2></div>
-            </div>
-            <div id="history-list" class="history-list"><p class="field-note">No generated files yet.</p></div>
-          </section>
         </div>
 
         <div class="editor-panel" id="editor-panel">

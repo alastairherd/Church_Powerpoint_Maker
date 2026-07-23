@@ -8,13 +8,10 @@ export function createEditorController({
   render = {},
   setSaveState,
   setSaveHelp,
-  setConflict,
-  setConflictRecovery,
   showToast,
 }) {
   const state = {
     service: null,
-    lease: null,
     selectedId: null,
     editGeneration: 0,
     savedGeneration: 0,
@@ -24,7 +21,6 @@ export function createEditorController({
     transitionDepth: 0,
     status: 'Saved',
     conflict: null,
-    activeLeaseRenewal: null,
     loaders: new Map(),
   };
   const noop = () => {};
@@ -34,10 +30,6 @@ export function createEditorController({
     state.service.revision = saved.revision;
     if (saved.status !== undefined) state.service.status = saved.status;
     if (saved.audit !== undefined) state.service.audit = saved.audit;
-    if (Object.prototype.hasOwnProperty.call(saved, 'lease')) {
-      state.service.lease = saved.lease;
-      state.lease = saved.lease;
-    }
   }
 
   function findComponent(id) {
@@ -213,29 +205,6 @@ export function createEditorController({
     }, SAVE_DEBOUNCE_MS);
   }
 
-  function performLeaseRenewal(force = false) {
-    if (!state.service) return null;
-    const remaining = Date.parse(state.lease?.expires_at || 0) - Date.now();
-    if (!force && state.lease && remaining > 90_000) return state.lease;
-    if (state.activeLeaseRenewal) return state.activeLeaseRenewal;
-    const operation = checkedRequest(`/api/services/${state.service.id}/lock`, { method: 'POST' }).then(async response => {
-      const renewed = await response.json();
-      state.lease = renewed;
-      state.service.lease = renewed;
-      return renewed;
-    });
-    const renewal = operation.finally(() => {
-      if (state.activeLeaseRenewal === renewal) state.activeLeaseRenewal = null;
-    });
-    state.activeLeaseRenewal = renewal;
-    return renewal;
-  }
-
-  function renewLease(force = false, { fromSave = false } = {}) {
-    if (!fromSave && state.activeSave) return state.activeSave.then(() => state.lease);
-    return performLeaseRenewal(force);
-  }
-
   function loadService(record, { discardUnsaved = false } = {}) {
     return enqueueTransition(async () => {
       if (discardUnsaved) {
@@ -247,27 +216,13 @@ export function createEditorController({
         await flushDirtyGenerations();
       }
       clearPendingTimer();
-      const hadConflict = Boolean(state.conflict);
       state.loaders.clear();
       state.service = record;
-      state.lease = record.lease || null;
       state.selectedId = record.components[0]?.id || null;
       state.editGeneration = 0;
       state.savedGeneration = 0;
       state.status = 'Saved';
       state.conflict = null;
-      if (hadConflict) setConflict(null);
-      setConflictRecovery?.(null);
-      try {
-        await renewLease(true);
-      } catch (error) {
-        state.lease = null;
-        state.service.lease = null;
-        state.status = 'Failed';
-        setSaveState('Failed', 'Failed');
-        setSaveHelp(error.message);
-        showToast(error.message);
-      }
       (render.all || noop)();
     });
   }
@@ -280,9 +235,6 @@ export function createEditorController({
     state.status = 'Saving';
     setSaveState('Saving', 'Saving');
     const operation = (async () => {
-      if (!state.lease) throw new Error('This service is read-only. Reload it to acquire the editing lease.');
-      const lease = renewLease(false, { fromSave: true });
-      if (lease?.then) await lease;
       const sentGeneration = state.editGeneration;
       const body = JSON.stringify(state.service);
       const response = await checkedRequest(`/api/services/${state.service.id}/autosave`, { method: 'PUT', body });
@@ -306,8 +258,6 @@ export function createEditorController({
       showToast(error.message);
       if (error.status === 409) {
         state.conflict = error;
-        setConflict(error);
-        setConflictRecovery?.(null);
       }
       throw error;
     }).finally(() => {
@@ -364,24 +314,8 @@ export function createEditorController({
   function isDirty() { return state.editGeneration > state.savedGeneration; }
   function isSaving() { return state.activeSave !== null; }
 
-  function keepEditingAfterConflict() {
-    if (!state.conflict) return;
-    state.status = 'Unsaved';
-    setSaveState('Unsaved', 'Unsaved');
-    setSaveHelp('The service remains local and unsaved. Review the conflict controls and reload the server version before saving.');
-    setConflict(null);
-    setConflictRecovery?.(state.conflict);
-  }
-
-  function reopenConflictControls() {
-    if (!state.conflict) return;
-    setConflict(state.conflict);
-    setConflictRecovery?.(null);
-  }
-
   return {
     getService: () => state.service,
-    getLease: () => state.lease,
     getState: () => state,
     findComponent,
     loadService,
@@ -393,10 +327,7 @@ export function createEditorController({
     flushPendingSave,
     isDirty,
     isSaving,
-    renewLease,
     loadPsalm,
     loadEsv,
-    keepEditingAfterConflict,
-    reopenConflictControls,
   };
 }

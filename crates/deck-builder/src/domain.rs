@@ -82,13 +82,6 @@ pub enum ServiceStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceLease {
-    pub holder: String,
-    pub token: String,
-    pub expires_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceRecord {
     pub id: String,
     pub name: String,
@@ -102,8 +95,6 @@ pub struct ServiceRecord {
     pub preset: ServicePreset,
     pub status: ServiceStatus,
     pub revision: u64,
-    #[serde(default)]
-    pub lease: Option<ServiceLease>,
     pub components: Vec<ServiceComponent>,
     pub audit: AuditMetadata,
 }
@@ -142,7 +133,6 @@ impl ServiceRecord {
             preset,
             status: ServiceStatus::Draft,
             revision: 0,
-            lease: None,
             components: preset.components(),
             audit: AuditMetadata::new(staff_name),
         }

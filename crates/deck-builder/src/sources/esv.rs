@@ -34,14 +34,7 @@ impl EsvClient {
             .client
             .get("https://api.esv.org/v3/passage/text/")
             .headers(headers)
-            .query(&[
-                ("q", reference),
-                ("include-headings", "false"),
-                ("include-footnotes", "false"),
-                ("include-verse-numbers", "true"),
-                ("include-short-copyright", "false"),
-                ("include-passage-references", "false"),
-            ])
+            .query(&passage_query(reference))
             .send()
             .await
             .context("request ESV passage")?;
@@ -67,7 +60,30 @@ impl EsvClient {
     }
 }
 
+fn passage_query(reference: &str) -> [(&str, &str); 6] {
+    [
+        ("q", reference),
+        ("include-headings", "false"),
+        ("include-footnotes", "false"),
+        ("include-verse-numbers", "false"),
+        ("include-short-copyright", "false"),
+        ("include-passage-references", "false"),
+    ]
+}
+
 #[derive(Debug, Deserialize)]
 struct EsvResponse {
     passages: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::passage_query;
+
+    #[test]
+    fn requests_esv_text_without_verse_numbers() {
+        let query = passage_query("Psalm 96:2");
+        assert!(query.contains(&("include-verse-numbers", "false")));
+        assert!(!query.contains(&("include-verse-numbers", "true")));
+    }
 }

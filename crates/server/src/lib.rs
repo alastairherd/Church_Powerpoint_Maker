@@ -13,7 +13,7 @@ use axum::{Extension, Json, Router};
 use chrono::{Duration as ChronoDuration, NaiveDate, Utc};
 use deck_builder::{
     build_deck, propose_psalm_groups, Catechism, FixedComponent, GeneratedDeckVersion,
-    GlobalSettingsVersion, Psalm, ServiceLease, ServicePreset, ServiceRecord, ServiceStatus,
+    GlobalSettingsVersion, Psalm, ServicePreset, ServiceRecord, ServiceStatus,
     Sources, StoredSong,
 };
 use hmac::{Hmac, Mac};
@@ -34,7 +34,6 @@ const SESSION_COOKIE: &str = "twpc_session";
 const JSON_CONTENT_TYPE: &str = "application/json";
 const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 const LOGIN_ATTEMPTS: usize = 8;
-const LEASE_MINUTES: i64 = 5;
 const GENERATED_DECK_RETENTION_DAYS: i64 = 730;
 
 #[derive(Clone)]
@@ -119,6 +118,7 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
         .route("/", get(builder_page))
         .route("/library", get(library_page))
         .route("/admin", get(admin_page))
+        .route("/generated", get(generated_page))
         .route("/api/session", get(current_session))
         .route("/api/logout", post(logout))
         .route("/api/presets", get(list_presets))
@@ -136,10 +136,10 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
             get(get_service).put(update_service).delete(archive_service),
         )
         .route("/api/services/:id/restore", post(restore_service))
-        .route("/api/services/:id/lock", post(acquire_lease))
         .route("/api/services/:id/autosave", put(update_service))
         .route("/api/services/:id/generate", post(generate_service))
         .route("/api/services/:id/history", get(service_history))
+        .route("/api/generated", get(generated_decks))
         .route(
             "/api/services/:id/revisions/:revision/download",
             get(download_service_revision),
@@ -158,6 +158,7 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
         )
         .route("/static/library.js", get(library_javascript))
         .route("/static/admin.js", get(admin_javascript))
+        .route("/static/generated.js", get(generated_javascript))
         .route("/favicon.svg", get(favicon))
         .merge(protected)
         .with_state(state)
@@ -206,6 +207,13 @@ async fn admin_javascript() -> impl IntoResponse {
     )
 }
 
+async fn generated_javascript() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("../static/generated.js"),
+    )
+}
+
 async fn favicon() -> impl IntoResponse {
     (
         [(CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
@@ -239,6 +247,14 @@ struct LibraryTemplate {
 #[derive(Template)]
 #[template(path = "admin.html")]
 struct AdminTemplate {
+    staff_name: String,
+    staff_initial: String,
+    csrf: String,
+}
+
+#[derive(Template)]
+#[template(path = "generated.html")]
+struct GeneratedTemplate {
     staff_name: String,
     staff_initial: String,
     csrf: String,
@@ -338,6 +354,17 @@ async fn admin_page(
     Extension(session): Extension<StaffSession>,
 ) -> Result<Html<String>, AppError> {
     render(AdminTemplate {
+        staff_initial: staff_initial(&session.display_name),
+        staff_name: session.display_name,
+        csrf: csrf_for(&state, &session.token)?,
+    })
+}
+
+async fn generated_page(
+    State(state): State<AppState>,
+    Extension(session): Extension<StaffSession>,
+) -> Result<Html<String>, AppError> {
+    render(GeneratedTemplate {
         staff_initial: staff_initial(&session.display_name),
         staff_name: session.display_name,
         csrf: csrf_for(&state, &session.token)?,
@@ -489,7 +516,6 @@ async fn update_service(
     State(state): State<AppState>,
     Extension(session): Extension<StaffSession>,
     Path(id): Path<String>,
-    headers: HeaderMap,
     Json(mut incoming): Json<ServiceRecord>,
 ) -> Result<Response, AppError> {
     if incoming.id != id {
@@ -497,7 +523,6 @@ async fn update_service(
     }
     validate_service_name(&incoming.name)?;
     let (current, object) = load_service(&state, &id).await?;
-    require_lease(&current, &session, &headers)?;
     if incoming.revision != current.revision {
         return Err(AppError::conflict(
             "this service changed in another browser; reload before saving",
@@ -510,7 +535,6 @@ async fn update_service(
         incoming.status
     };
     incoming.mark_edited(&session.display_name);
-    incoming.lease = current.lease;
     let stored = put_json(
         state.store.as_ref(),
         &service_key(&id),
@@ -556,46 +580,12 @@ async fn change_service_status(
     Ok(Json(service))
 }
 
-async fn acquire_lease(
-    State(state): State<AppState>,
-    Extension(session): Extension<StaffSession>,
-    Path(id): Path<String>,
-) -> Result<Json<ServiceLease>, AppError> {
-    let (mut service, object) = load_service(&state, &id).await?;
-    let now = Utc::now();
-    if let Some(lease) = &service.lease {
-        if lease.expires_at > now && lease.holder != session.display_name {
-            return Err(AppError::locked(format!(
-                "{} is editing this service until {}",
-                lease.holder,
-                lease.expires_at.format("%H:%M")
-            )));
-        }
-    }
-    let lease = ServiceLease {
-        holder: session.display_name,
-        token: new_id(&state, "lease"),
-        expires_at: now + ChronoDuration::minutes(LEASE_MINUTES),
-    };
-    service.lease = Some(lease.clone());
-    put_json(
-        state.store.as_ref(),
-        &service_key(&id),
-        &service,
-        PutCondition::IfMatch(object.etag),
-    )
-    .await?;
-    Ok(Json(lease))
-}
-
 async fn generate_service(
     State(state): State<AppState>,
     Extension(session): Extension<StaffSession>,
     Path(id): Path<String>,
-    headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let (mut service, object) = load_service(&state, &id).await?;
-    require_lease(&service, &session, &headers)?;
     let settings = load_settings(&state).await?;
     let sources = ServiceSources {
         upstream: state.sources.clone(),
@@ -641,7 +631,6 @@ async fn generate_service(
     .await?;
     service.status = ServiceStatus::Completed;
     service.audit.touch(&session.display_name);
-    service.lease = None;
     put_json(
         state.store.as_ref(),
         &service_key(&id),
@@ -680,7 +669,68 @@ async fn service_history(
         revisions.push(serde_json::from_slice(&object.bytes)?);
     }
     revisions.sort_by_key(|revision: &GeneratedDeckVersion| revision.revision);
+    revisions.reverse();
     Ok(Json(revisions))
+}
+
+#[derive(Debug, Serialize)]
+struct GeneratedDeckListing {
+    service_id: String,
+    service_name: String,
+    service_date: NaiveDate,
+    revision: u64,
+    generated_at: chrono::DateTime<Utc>,
+    generated_by: String,
+    expires_at: chrono::DateTime<Utc>,
+    source_revision: u64,
+    download_url: String,
+}
+
+async fn generated_decks(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<GeneratedDeckListing>>, AppError> {
+    let mut generated = Vec::new();
+    for key in state.store.list("entities/services/").await? {
+        let parts: Vec<_> = key.split('/').collect();
+        if parts.len() != 5 || parts[1] != "services" || parts[3] != "revisions" {
+            continue;
+        }
+        let Some(file) = parts.last() else { continue };
+        let Some(revision_text) = file.strip_suffix(".json") else {
+            continue;
+        };
+        let Ok(revision) = revision_text.parse::<u64>() else {
+            continue;
+        };
+        let object = state.store.get(&key).await?;
+        let metadata: GeneratedDeckVersion = serde_json::from_slice(&object.bytes)?;
+        if metadata.service_id != parts[2] || metadata.revision != revision {
+            continue;
+        }
+        let (service, _) = load_service(&state, &metadata.service_id).await?;
+        generated.push(GeneratedDeckListing {
+            service_id: metadata.service_id.clone(),
+            service_name: service.name,
+            service_date: service.date,
+            revision: metadata.revision,
+            generated_at: metadata.generated_at,
+            generated_by: metadata.generated_by,
+            expires_at: metadata.expires_at,
+            source_revision: metadata.source_revision,
+            download_url: format!(
+                "/api/services/{}/revisions/{}/download",
+                metadata.service_id, metadata.revision
+            ),
+        });
+    }
+    generated.sort_by(|left, right| {
+        right
+            .generated_at
+            .cmp(&left.generated_at)
+            .then_with(|| right.service_id.cmp(&left.service_id))
+            .then_with(|| right.revision.cmp(&left.revision))
+    });
+    Ok(Json(generated))
 }
 
 async fn download_service_revision(
@@ -997,29 +1047,6 @@ fn client_address(headers: &HeaderMap) -> String {
         .to_string()
 }
 
-fn require_lease(
-    service: &ServiceRecord,
-    session: &StaffSession,
-    headers: &HeaderMap,
-) -> Result<(), AppError> {
-    let lease = service
-        .lease
-        .as_ref()
-        .ok_or_else(|| AppError::locked("acquire the editing lease before saving"))?;
-    let supplied = headers
-        .get("x-lease-token")
-        .and_then(|value| value.to_str().ok());
-    if lease.expires_at <= Utc::now()
-        || lease.holder != session.display_name
-        || supplied != Some(lease.token.as_str())
-    {
-        return Err(AppError::locked(
-            "the editing lease expired or belongs to another staff member",
-        ));
-    }
-    Ok(())
-}
-
 fn validate_service_name(name: &str) -> Result<(), AppError> {
     if name.trim().is_empty() || name.len() > 100 {
         return Err(AppError::bad_request(
@@ -1106,9 +1133,6 @@ impl AppError {
     }
     fn conflict(message: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, message)
-    }
-    fn locked(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::LOCKED, message)
     }
     fn internal(message: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, message)

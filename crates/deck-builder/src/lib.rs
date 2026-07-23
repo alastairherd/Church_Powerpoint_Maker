@@ -320,7 +320,9 @@ pub async fn build_deck(
                 for page in pages {
                     let slide = clone_seed(&mut pres, SEED_LITURGY, "liturgy")?;
                     set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
-                    set_shape_text(&mut pres, slide, "TextShape 2", &page)?;
+                    pres.slide_mut(slide)?
+                        .shape("TextShape 2")?
+                        .set_rich_text(&[Run::plain(&page).with_text_style("Arial", "000000")])?;
                 }
             }
             ServiceComponent::CustomTextImage {
