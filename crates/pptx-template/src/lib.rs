@@ -8,6 +8,7 @@ use zip::{ZipArchive, ZipWriter};
 const CONTENT_TYPES: &str = "[Content_Types].xml";
 const PRESENTATION: &str = "ppt/presentation.xml";
 const PRESENTATION_RELS: &str = "ppt/_rels/presentation.xml.rels";
+const REVISION_INFO: &str = "ppt/revisionInfo.xml";
 const SLIDE_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.presentationml.slide+xml";
 const SLIDE_REL_TYPE: &str =
@@ -1118,6 +1119,7 @@ fn auxiliary_part(name: &str) -> bool {
     .iter()
     .any(|segment| name.contains(segment))
         || name.ends_with("/commentAuthors.xml")
+        || name == REVISION_INFO
 }
 
 fn resolve_part_target(owner_part: &str, target: &str) -> Result<String> {
@@ -1200,6 +1202,7 @@ fn drop_auxiliary_relationship(relationship_type: &str) -> bool {
         "/oleObject",
         "/activeXControl",
         "/vbaProject",
+        "/revisionInfo",
     ]
     .iter()
     .any(|suffix| relationship_type.ends_with(suffix))

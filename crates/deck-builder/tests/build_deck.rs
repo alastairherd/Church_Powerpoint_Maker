@@ -83,6 +83,18 @@ async fn builds_valid_pptx_from_service_record() {
         let name = part.name().to_string();
         assert!(!name.contains("notesSlide"), "notes are removed: {name}");
         assert!(!name.contains("notesMaster"), "notes are removed: {name}");
+        assert!(
+            !name.contains("revisionInfo"),
+            "revision metadata is removed: {name}"
+        );
+        if name == "ppt/_rels/presentation.xml.rels" || name == "[Content_Types].xml" {
+            let mut xml = String::new();
+            part.read_to_string(&mut xml).expect("package XML is UTF-8");
+            assert!(
+                !xml.contains("revisionInfo"),
+                "revision metadata is removed: {name}"
+            );
+        }
         if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") {
             let mut xml = String::new();
             part.read_to_string(&mut xml).expect("slide xml is utf-8");

@@ -44,6 +44,45 @@ fn removing_auxiliary_content_removes_notes_master_declaration() {
 }
 
 #[test]
+fn removing_auxiliary_content_removes_revision_info() {
+    let mut pres = Presentation::open_bytes(TEMPLATE).expect("open template");
+    pres.remove_auxiliary_content()
+        .expect("remove auxiliary content");
+    let bytes = pres.save_bytes().expect("save cleaned template");
+
+    let mut archive = ZipArchive::new(std::io::Cursor::new(&bytes)).expect("open saved package");
+    let names = (0..archive.len())
+        .map(|index| {
+            archive
+                .by_index(index)
+                .expect("package part")
+                .name()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert!(!names.contains(&"ppt/revisionInfo.xml".to_string()));
+
+    let mut presentation_rels = String::new();
+    archive
+        .by_name("ppt/_rels/presentation.xml.rels")
+        .expect("presentation relationships exist")
+        .read_to_string(&mut presentation_rels)
+        .expect("presentation relationships are UTF-8");
+    assert!(!presentation_rels.contains("revisionInfo"));
+
+    let mut content_types = String::new();
+    archive
+        .by_name("[Content_Types].xml")
+        .expect("content types exist")
+        .read_to_string(&mut content_types)
+        .expect("content types are UTF-8");
+    assert!(!content_types.contains("revisionInfo"));
+
+    let reopened = Presentation::open_bytes(&bytes).expect("reopen cleaned package");
+    reopened.validate().expect("cleaned package validates");
+}
+
+#[test]
 fn can_clone_named_twpc_shapes_set_text_and_reorder() {
     let mut pres = Presentation::open_bytes(TEMPLATE).expect("open template");
     let first = pres.clone_slide(0).expect("clone first slide");
