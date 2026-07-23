@@ -11,6 +11,7 @@ export function makeService(overrides = {}) {
     type: 'psalm',
     heading: 'Psalm',
     reference: 'Psalm 23:1–6',
+    show_verse_numbers: true,
     slide_breaks: ['The LORD is my shepherd'],
   };
   const call = {

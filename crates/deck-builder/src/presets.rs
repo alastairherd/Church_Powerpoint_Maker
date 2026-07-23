@@ -65,6 +65,7 @@ impl ComponentSeed {
                 id,
                 heading: "Psalm".into(),
                 reference: String::new(),
+                show_verse_numbers: true,
                 tune: None,
                 slide_breaks: Vec::new(),
             },

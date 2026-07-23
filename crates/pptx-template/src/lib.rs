@@ -89,7 +89,11 @@ impl Run {
         }
     }
 
-    pub fn with_text_style(mut self, typeface: impl Into<String>, color: impl Into<String>) -> Self {
+    pub fn with_text_style(
+        mut self,
+        typeface: impl Into<String>,
+        color: impl Into<String>,
+    ) -> Self {
         self.typeface = Some(typeface.into());
         self.color = Some(color.into());
         self
@@ -795,8 +799,8 @@ impl Presentation {
             .filter_map(|tag| attr(&tag, "Id"))
             .collect::<HashSet<_>>();
         let presentation = self.part_string(PRESENTATION)?;
-        let notes_master = Regex::new(r#"<p:notesMasterId\b[^>]*>"#)
-            .expect("valid notes master regex");
+        let notes_master =
+            Regex::new(r#"<p:notesMasterId\b[^>]*>"#).expect("valid notes master regex");
         for tag in notes_master.find_iter(&presentation) {
             let tag = tag.as_str();
             let relationship_id = attr(tag, "r:id").ok_or_else(|| {
@@ -1039,7 +1043,8 @@ impl ShapeMut<'_> {
         let part = self.presentation.slides[self.slide_index].part.clone();
         let mut xml = self.presentation.part_string(&part)?;
         let (start, end, block) = find_shape_block(&xml, &self.shape_name)?;
-        let xfrm_re = Regex::new(r#"(?s)<a:xfrm>.*?</a:xfrm>"#).expect("valid shape transform regex");
+        let xfrm_re =
+            Regex::new(r#"(?s)<a:xfrm>.*?</a:xfrm>"#).expect("valid shape transform regex");
         let xfrm = format!(
             "<a:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></a:xfrm>"
         );
@@ -1237,9 +1242,8 @@ fn strip_relationship_reference(xml: &str, relationship_id: &str) -> String {
         regex::escape(relationship_id)
     ))
     .expect("valid notes master relationship regex");
-    let empty_notes_master_list =
-        Regex::new(r#"(?s)<p:notesMasterIdLst>\s*</p:notesMasterIdLst>"#)
-            .expect("valid empty notes master list regex");
+    let empty_notes_master_list = Regex::new(r#"(?s)<p:notesMasterIdLst>\s*</p:notesMasterIdLst>"#)
+        .expect("valid empty notes master list regex");
     let reference = Regex::new(&format!(
         r#"\s+r:(?:id|embed|link)="{}""#,
         regex::escape(relationship_id)
@@ -1372,35 +1376,162 @@ fn runs_xml(runs: &[Run], default_rpr: Option<&str>) -> String {
 }
 
 fn merge_run_style(rpr: &str, typeface: &str, color: &str) -> String {
-    let direct_style = Regex::new(r#"\s(?:baseline|b|i|u)=\"[^\"]*\""#)
-        .expect("valid direct run style regex");
-    let script_fonts =
-        Regex::new(r#"(?s)<a:(?:latin|ea|cs)\b.*?/>"#).expect("valid script font regex");
-    let fill = Regex::new(r#"(?s)<a:solidFill>.*?</a:solidFill>"#).expect("valid fill regex");
+    let direct_style =
+        Regex::new(r#"\s(?:baseline|b|i|u)=\"[^\"]*\""#).expect("valid direct run style regex");
     let mut out = direct_style.replace_all(rpr, "").to_string();
-    out = script_fonts.replace_all(&out, "").to_string();
-    out = fill.replace_all(&out, "").to_string();
+    if out.ends_with("/>") {
+        out.truncate(out.len() - 2);
+        out.push('>');
+        out.push_str("</a:rPr>");
+    }
+    out = remove_rpr_children(
+        &out,
+        &[
+            "solidFill",
+            "noFill",
+            "gradFill",
+            "blipFill",
+            "pattFill",
+            "grpFill",
+        ],
+    );
+    out = remove_rpr_children(&out, &["latin", "ea", "cs"]);
     let fill = if color.eq_ignore_ascii_case("accent1") {
         "<a:schemeClr val=\"accent1\"/>".to_string()
     } else {
         format!("<a:srgbClr val=\"{}\"/>", xml_escape(color))
     };
-    let style = format!(
-        "<a:solidFill>{fill}</a:solidFill>\
-         <a:latin typeface=\"{typeface}\"/>\
+    let fill_style = format!("<a:solidFill>{fill}</a:solidFill>");
+    let script_fonts = format!(
+        "<a:latin typeface=\"{typeface}\"/>\
          <a:ea typeface=\"{typeface}\"/>\
          <a:cs typeface=\"{typeface}\"/>",
         typeface = xml_escape(typeface)
     );
-    if out.ends_with("/>") {
-        out.truncate(out.len() - 2);
-        out.push('>');
-        out.push_str(&style);
-        out.push_str("</a:rPr>");
-    } else if let Some(index) = out.rfind("</a:rPr>") {
-        out.insert_str(index, &style);
-    }
+    insert_before_rpr_children(
+        &mut out,
+        &fill_style,
+        &[
+            "effectLst",
+            "effectDag",
+            "highlight",
+            "uLn",
+            "uLnTx",
+            "uFill",
+            "uFillTx",
+            "latin",
+            "ea",
+            "cs",
+            "sym",
+            "hlinkClick",
+            "hlinkMouseOver",
+            "rtl",
+            "extLst",
+        ],
+    );
+    insert_before_rpr_children(
+        &mut out,
+        &script_fonts,
+        &["sym", "hlinkClick", "hlinkMouseOver", "rtl", "extLst"],
+    );
     out
+}
+
+fn remove_rpr_children(xml: &str, names: &[&str]) -> String {
+    let children = rpr_children(xml);
+    let mut out = String::with_capacity(xml.len());
+    let mut cursor = 0;
+    for (name, start, end) in children {
+        if names.contains(&name.as_str()) {
+            out.push_str(&xml[cursor..start]);
+            cursor = end;
+        }
+    }
+    out.push_str(&xml[cursor..]);
+    out
+}
+
+fn insert_before_rpr_children(xml: &mut String, insertion: &str, names: &[&str]) {
+    let index = rpr_children(xml)
+        .into_iter()
+        .find(|(name, _, _)| names.contains(&name.as_str()))
+        .map(|(_, start, _)| start)
+        .or_else(|| xml.rfind("</a:rPr>"));
+    if let Some(index) = index {
+        xml.insert_str(index, insertion);
+    }
+}
+
+fn rpr_children(xml: &str) -> Vec<(String, usize, usize)> {
+    let Some(open_end) = xml.find('>') else {
+        return Vec::new();
+    };
+    let Some(close_start) = xml.rfind("</a:rPr>") else {
+        return Vec::new();
+    };
+    let inner = &xml[open_end + 1..close_start];
+    let mut children = Vec::new();
+    let mut cursor = 0;
+    let mut depth = 0_usize;
+    let mut current = None;
+
+    while let Some(relative_start) = inner[cursor..].find('<') {
+        let start = cursor + relative_start;
+        let Some(relative_end) = xml_tag_end(&inner[start..]) else {
+            break;
+        };
+        let end = start + relative_end;
+        let tag = &inner[start..end];
+        if tag.starts_with("<!--") || tag.starts_with("<?") || tag.starts_with("<!") {
+            cursor = end;
+            continue;
+        }
+        if tag.starts_with("</") {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                if let Some((name, child_start)) = current.take() {
+                    children.push((name, child_start + open_end + 1, end + open_end + 1));
+                }
+            }
+        } else {
+            if depth == 0 {
+                current = Some((xml_tag_name(tag).unwrap_or_default(), start));
+            }
+            if !tag.trim_end().ends_with("/>") {
+                depth += 1;
+            } else if depth == 0 {
+                if let Some((name, child_start)) = current.take() {
+                    children.push((name, child_start + open_end + 1, end + open_end + 1));
+                }
+            }
+        }
+        cursor = end;
+    }
+    children
+}
+
+fn xml_tag_end(xml: &str) -> Option<usize> {
+    let mut quote = None;
+    for (index, character) in xml.char_indices() {
+        match (quote, character) {
+            (Some(expected), value) if value == expected => quote = None,
+            (None, '\"') | (None, '\'') => quote = Some(character),
+            (None, '>') => return Some(index + 1),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn xml_tag_name(tag: &str) -> Option<String> {
+    tag.strip_prefix('<')?
+        .trim_start_matches('/')
+        .split(|character: char| {
+            character.is_ascii_whitespace() || character == '>' || character == '/'
+        })
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(|name| name.strip_prefix("a:").unwrap_or(name).to_string())
 }
 
 fn run_attrs(run: &Run) -> String {
@@ -1478,6 +1609,37 @@ mod tests {
         assert_eq!(styled.matches(r#"typeface="Arial Black""#).count(), 3);
         assert!(!styled.contains("Calibri"));
         assert!(!styled.contains("+mn-ea"));
+    }
+
+    #[test]
+    fn styled_runs_keep_drawingml_character_property_order() {
+        let rpr = concat!(
+            r#"<a:rPr lang="en-GB"><a:ln><a:noFill/></a:ln>"#,
+            r#"<a:effectLst/><a:uLnTx/><a:uFillTx/>"#,
+            r#"<a:solidFill><a:schemeClr val="accent1"/></a:solidFill>"#,
+            r#"<a:latin typeface="Calibri"/><a:ea typeface="Calibri"/><a:cs typeface="Calibri"/>"#,
+            r#"<a:hlinkClick r:id="rId1"/><a:rtl/><a:extLst/></a:rPr>"#,
+        );
+
+        let styled = merge_run_style(rpr, "Arial Black", "000000");
+        let positions = [
+            styled.find("<a:ln").unwrap(),
+            styled.find("<a:solidFill").unwrap(),
+            styled.find("<a:effectLst").unwrap(),
+            styled.find("<a:uLnTx").unwrap(),
+            styled.find("<a:uFillTx").unwrap(),
+            styled.find("<a:latin").unwrap(),
+            styled.find("<a:ea").unwrap(),
+            styled.find("<a:cs").unwrap(),
+            styled.find("<a:hlinkClick").unwrap(),
+            styled.find("<a:rtl").unwrap(),
+            styled.find("<a:extLst").unwrap(),
+        ];
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(styled.matches("<a:solidFill>").count(), 1);
+        assert!(styled.contains("<a:srgbClr val=\"000000\"/>"));
+        assert!(styled.contains("<a:ln><a:noFill/></a:ln>"));
+        assert_eq!(styled.matches(r#"typeface="Arial Black""#).count(), 3);
     }
 }
 

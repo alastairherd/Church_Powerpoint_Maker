@@ -216,6 +216,7 @@ pub async fn build_deck(
             ServiceComponent::Psalm {
                 heading,
                 reference,
+                show_verse_numbers,
                 slide_breaks,
                 tune,
                 ..
@@ -245,7 +246,12 @@ pub async fn build_deck(
                         reference
                     };
                     set_shape_text(&mut pres, slide, "TextShape 1", title)?;
-                    set_shape_runs(&mut pres, slide, "TextShape 2", &psalm_runs(&stanza))?;
+                    set_shape_runs(
+                        &mut pres,
+                        slide,
+                        "TextShape 2",
+                        &psalm_runs(&stanza, *show_verse_numbers),
+                    )?;
                     if index + 1 == count {
                         pres.copy_shape(SEED_SONG_FINAL, "TextBox 4", slide, "Psalm Credits")?;
                         pres.slide_mut(slide)?
@@ -475,15 +481,15 @@ fn notice_runs(rows: &[NoticeRow]) -> Vec<Run> {
 }
 
 pub fn propose_psalm_groups(stanzas: &[String]) -> Vec<String> {
-    const MAX_RENDERED_LINES: usize = 8;
-    const APPROXIMATE_CHARACTERS_PER_LINE: usize = 55;
+    let (max_lines, characters_per_line) = psalm_layout_capacity();
 
     let mut groups = Vec::new();
     let mut current = String::new();
     let mut current_lines = 0;
     for stanza in stanzas {
-        let stanza_lines = estimated_psalm_lines(stanza, APPROXIMATE_CHARACTERS_PER_LINE);
-        if !current.is_empty() && current_lines + stanza_lines > MAX_RENDERED_LINES {
+        let stanza_lines = estimated_psalm_lines(stanza, characters_per_line);
+        let separator_lines = usize::from(!current.is_empty());
+        if !current.is_empty() && current_lines + separator_lines + stanza_lines > max_lines {
             groups.push(current);
             current = String::new();
             current_lines = 0;
@@ -492,7 +498,7 @@ pub fn propose_psalm_groups(stanzas: &[String]) -> Vec<String> {
             current.push_str("\n\n");
         }
         current.push_str(stanza);
-        current_lines += stanza_lines;
+        current_lines += separator_lines + stanza_lines;
     }
     if !current.is_empty() {
         groups.push(current);
@@ -500,10 +506,39 @@ pub fn propose_psalm_groups(stanzas: &[String]) -> Vec<String> {
     groups
 }
 
+// TextShape 2 in the Psalm seed is 9,683,583 × 4,506,298 EMU. Generated
+// runs use 28pt Arial Black, with 100% paragraph line spacing. These limits
+// are derived from that box rather than from an arbitrary stanza count. The
+// 50% average glyph-width and 85/90% safety factors leave room for wide words,
+// verse markers, and PowerPoint's font metrics while still grouping ordinary
+// three- or four-line Psalm paragraphs.
+const PSALM_TEXT_BOX_WIDTH_EMU: u64 = 9_683_583;
+const PSALM_TEXT_BOX_HEIGHT_EMU: u64 = 4_506_298;
+const PSALM_FONT_SIZE_HUNDREDTHS_PT: u64 = 2_800;
+const EMU_PER_POINT: u64 = 12_700;
+const PSALM_AVERAGE_GLYPH_WIDTH_PERCENT: u64 = 50;
+const PSALM_VERTICAL_SAFETY_PERCENT: u64 = 85;
+const PSALM_HORIZONTAL_SAFETY_PERCENT: u64 = 90;
+
+fn psalm_layout_capacity() -> (usize, usize) {
+    let font_height_emu = PSALM_FONT_SIZE_HUNDREDTHS_PT * EMU_PER_POINT / 100;
+    let natural_lines = PSALM_TEXT_BOX_HEIGHT_EMU / font_height_emu;
+    let max_lines = (natural_lines * PSALM_VERTICAL_SAFETY_PERCENT / 100).max(1) as usize;
+
+    let average_glyph_width_emu = font_height_emu * PSALM_AVERAGE_GLYPH_WIDTH_PERCENT / 100;
+    let natural_characters = PSALM_TEXT_BOX_WIDTH_EMU / average_glyph_width_emu;
+    let characters_per_line =
+        (natural_characters * PSALM_HORIZONTAL_SAFETY_PERCENT / 100).max(1) as usize;
+
+    (max_lines, characters_per_line)
+}
+
 fn estimated_psalm_lines(text: &str, characters_per_line: usize) -> usize {
     text.lines()
-        .filter(|line| !line.trim().is_empty())
         .map(|line| {
+            if line.trim().is_empty() {
+                return 1;
+            }
             let visible_characters = line
                 .replace("<underline>", "")
                 .replace("</underline>", "")
@@ -662,9 +697,14 @@ fn set_shape_runs(
     Ok(())
 }
 
-fn psalm_runs(text: &str) -> Vec<Run> {
+fn psalm_runs(text: &str, show_verse_numbers: bool) -> Vec<Run> {
+    let text = if show_verse_numbers {
+        text.to_string()
+    } else {
+        strip_leading_verse_numbers(text)
+    };
     let mut marked = Vec::new();
-    let mut remaining = text;
+    let mut remaining = text.as_str();
     let mut underlined = false;
     while !remaining.is_empty() {
         let next_open = remaining.find("<underline>");
@@ -727,6 +767,50 @@ fn psalm_runs(text: &str) -> Vec<Run> {
         }
     }
     runs
+}
+
+fn strip_leading_verse_numbers(text: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| {
+            let (content, newline) = line
+                .strip_suffix('\n')
+                .map_or((line, ""), |content| (content, "\n"));
+            let mut output = String::with_capacity(content.len() + newline.len());
+            let mut rest = content;
+            let leading_whitespace = rest.len() - rest.trim_start().len();
+            output.push_str(&rest[..leading_whitespace]);
+            rest = &rest[leading_whitespace..];
+            if rest.starts_with("<underline>") {
+                output.push_str("<underline>");
+                rest = &rest["<underline>".len()..];
+                let number_end = rest
+                    .char_indices()
+                    .take_while(|(_, character)| is_verse_number_character(*character))
+                    .last()
+                    .map(|(index, character)| index + character.len_utf8())
+                    .unwrap_or(0);
+                rest = &rest[number_end..];
+            } else {
+                let number_end = rest
+                    .char_indices()
+                    .take_while(|(_, character)| is_verse_number_character(*character))
+                    .last()
+                    .map(|(index, character)| index + character.len_utf8())
+                    .unwrap_or(0);
+                rest = &rest[number_end..];
+            }
+            output.push_str(rest);
+            output.push_str(newline);
+            output
+        })
+        .collect()
+}
+
+fn is_verse_number_character(character: char) -> bool {
+    matches!(
+        character,
+        '⁰' | '¹' | '²' | '³' | '⁴' | '⁵' | '⁶' | '⁷' | '⁸' | '⁹' | '⁻'
+    )
 }
 
 fn teaching_runs(text: &str) -> Vec<Run> {
@@ -1005,7 +1089,10 @@ mod tests {
 
     #[test]
     fn psalm_runs_preserve_superscript_verse_numbers_and_underlining() {
-        let runs = psalm_runs("⁴<underline>Though I</underline> walk through the valley");
+        let runs = psalm_runs(
+            "⁴<underline>Though I</underline> walk through the valley",
+            true,
+        );
         assert!(runs.iter().all(
             |run| run.font_size == Some(2800) && run.typeface.as_deref() == Some("Arial Black")
         ));
@@ -1014,5 +1101,36 @@ mod tests {
             .iter()
             .any(|run| run.underline && run.text == "Though I"));
         assert!(!runs.iter().any(|run| run.text.contains("underline")));
+    }
+
+    #[test]
+    fn psalm_runs_can_hide_only_leading_verse_numbers() {
+        let runs = psalm_runs(
+            "⁴<underline>Though I</underline> walk\nThe word ⁴ remains",
+            false,
+        );
+
+        assert!(runs
+            .iter()
+            .any(|run| run.underline && run.text == "Though I"));
+        assert!(runs.iter().any(|run| run.superscript && run.text == "4"));
+        assert!(runs.iter().any(|run| run.text.contains("The word ")));
+        assert!(runs.iter().any(|run| run.text.contains("\nThe word ")));
+    }
+
+    #[test]
+    fn old_psalm_records_default_to_showing_verse_numbers() {
+        let component: ServiceComponent = serde_json::from_str(
+            r#"{"type":"psalm","id":"psalm","heading":"Psalm","reference":"Psalm 23","slide_breaks":[]}"#,
+        )
+        .expect("old Psalm record deserialises");
+
+        assert!(matches!(
+            component,
+            ServiceComponent::Psalm {
+                show_verse_numbers: true,
+                ..
+            }
+        ));
     }
 }

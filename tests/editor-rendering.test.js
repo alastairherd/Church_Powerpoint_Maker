@@ -120,6 +120,21 @@ describe('editor render boundaries', () => {
     expect(document.getElementById('review-slides').textContent).toBe('4 slides');
   });
 
+  it('renders and persists the Psalm show verse numbers checkbox', async () => {
+    const service = makeService();
+    const app = createEditorApp({ document, request: async () => jsonResponse(service) });
+    await app.loadService(service);
+    document.querySelector('[data-id="psalm-1"] .component-main').click();
+
+    const checkbox = document.querySelector('[data-field="show_verse_numbers"]');
+    expect(checkbox.type).toBe('checkbox');
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.parentElement.textContent).toContain('Show verse numbers');
+
+    checkbox.click();
+    expect(app.controller().getService().components[1].show_verse_numbers).toBe(false);
+  });
+
   it('associates persistent loader errors with their action and exposes the save live region', async () => {
     const service = makeService();
     const app = createEditorApp({

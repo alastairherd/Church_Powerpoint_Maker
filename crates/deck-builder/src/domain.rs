@@ -218,6 +218,8 @@ pub enum ServiceComponent {
         id: String,
         heading: String,
         reference: String,
+        #[serde(default = "default_show_verse_numbers")]
+        show_verse_numbers: bool,
         #[serde(default)]
         tune: Option<VersionPin>,
         #[serde(default)]
@@ -254,6 +256,10 @@ pub enum ServiceComponent {
         #[serde(default)]
         image: Option<ImagePin>,
     },
+}
+
+fn default_show_verse_numbers() -> bool {
+    true
 }
 
 impl ServiceComponent {

@@ -407,6 +407,21 @@ export function createEditorApp({
   function renderPsalmFields(fields, component) {
     const inline = doc.createElement('div'); inline.className = 'inline-action';
     inline.append(textField('Sing Psalms reference', component.id, 'reference', component.reference, 'e.g. Psalm 23:1–6', 'summary'));
+    const verseNumbers = doc.createElement('label');
+    verseNumbers.className = 'checkbox-field';
+    verseNumbers.textContent = 'Show verse numbers';
+    const verseNumbersInput = doc.createElement('input');
+    verseNumbersInput.type = 'checkbox';
+    verseNumbersInput.checked = component.show_verse_numbers !== false;
+    verseNumbersInput.dataset.componentId = component.id;
+    verseNumbersInput.dataset.field = 'show_verse_numbers';
+    verseNumbersInput.addEventListener('change', () => setComponentField(
+      component.id,
+      'show_verse_numbers',
+      verseNumbersInput.checked,
+    ));
+    verseNumbers.append(verseNumbersInput);
+    fields.append(verseNumbers);
     const loadButton = button('Load Psalm text', 'button button-secondary');
     const componentId = component.id;
     loadButton.dataset.loaderKind = 'psalm';

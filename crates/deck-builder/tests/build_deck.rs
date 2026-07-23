@@ -6,6 +6,7 @@ use deck_builder::{
 };
 use pptx_template::Presentation;
 use std::io::{Cursor, Read};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use zip::ZipArchive;
 
@@ -99,6 +100,17 @@ fn named_shape_xml<'a>(xml: &'a str, name: &str) -> &'a str {
     &xml[start..end]
 }
 
+fn write_openxml_validation_output(bytes: &[u8]) {
+    let Some(path) = std::env::var_os("OPENXML_VALIDATOR_OUTPUT") else {
+        return;
+    };
+    let path = PathBuf::from(path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("Open XML validation output directory creates");
+    }
+    std::fs::write(&path, bytes).expect("generated deck writes for Open XML validation");
+}
+
 const CANONICAL_LITURGY_SLIDES: &[usize] = &[
     9, 10, 11, 12, 13, 14, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 47,
 ];
@@ -124,6 +136,7 @@ async fn builds_valid_pptx_from_service_record() {
             id: "psalm".into(),
             heading: "Psalm".into(),
             reference: "Psalm 1:1-3 (a)".into(),
+            show_verse_numbers: true,
             tune: None,
             slide_breaks: Vec::new(),
         },
@@ -145,6 +158,7 @@ async fn builds_valid_pptx_from_service_record() {
     let bytes = build_deck(&service, &MockSources, "522221")
         .await
         .expect("deck builds");
+    write_openxml_validation_output(&bytes);
     let pres = Presentation::open_bytes(&bytes).expect("opens generated deck");
     assert!(bytes.starts_with(b"PK"));
     assert!(pres.slide_count() >= 4);
@@ -198,6 +212,7 @@ async fn generated_psalm_runs_specify_arial_black_for_all_script_ranges() {
         id: "psalm".into(),
         heading: "Psalm".into(),
         reference: "Psalm 1:1-3 (a)".into(),
+        show_verse_numbers: true,
         tune: None,
         slide_breaks: Vec::new(),
     }];
@@ -217,6 +232,74 @@ async fn generated_psalm_runs_specify_arial_black_for_all_script_ranges() {
     }
     assert!(!first_psalm_body.contains("Calibri"));
     assert!(!first_psalm_body.contains("+mn-"));
+
+    let rpr_start = first_psalm_body
+        .find("<a:rPr")
+        .expect("Psalm body has run properties");
+    let rpr_end = first_psalm_body[rpr_start..]
+        .find("</a:rPr>")
+        .map(|offset| rpr_start + offset + "</a:rPr>".len())
+        .expect("Psalm run properties are closed");
+    let rpr = &first_psalm_body[rpr_start..rpr_end];
+    let positions = [
+        rpr.find("<a:ln").expect("run line properties"),
+        rpr.find("<a:solidFill").expect("run fill properties"),
+        rpr.find("<a:effectLst").expect("run effects"),
+        rpr.find("<a:uLnTx").expect("run underline line properties"),
+        rpr.find("<a:uFillTx")
+            .expect("run underline fill properties"),
+        rpr.find("<a:latin").expect("Latin script font"),
+        rpr.find("<a:ea").expect("East Asian script font"),
+        rpr.find("<a:cs").expect("complex script font"),
+    ];
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "Psalm run properties follow the DrawingML schema order: {rpr}"
+    );
+}
+
+#[tokio::test]
+async fn generated_psalm_can_hide_or_retain_leading_verse_numbers() {
+    let mut service = ServiceRecord::new(
+        "psalm-verse-numbers",
+        "Psalm verse number setting",
+        NaiveDate::from_ymd_opt(2026, 7, 12).unwrap(),
+        ServicePreset::Am,
+        "Alastair",
+    );
+    service.components = vec![ServiceComponent::Psalm {
+        id: "psalm".into(),
+        heading: "Psalm".into(),
+        reference: "Psalm 23:1-1".into(),
+        show_verse_numbers: false,
+        tune: None,
+        slide_breaks: vec!["⁴<underline>Though I</underline> walk through the valley".into()],
+    }];
+
+    let hidden = build_deck(&service, &MockSources, "522221")
+        .await
+        .expect("deck without verse numbers builds");
+    let hidden_xml = Presentation::open_bytes(&hidden)
+        .expect("hidden-number deck opens")
+        .slide_xml(0)
+        .expect("hidden-number Psalm slide XML");
+    assert!(hidden_xml.contains("Though I"));
+    assert!(!hidden_xml.contains("<a:t>4</a:t>"));
+
+    if let ServiceComponent::Psalm {
+        show_verse_numbers, ..
+    } = &mut service.components[0]
+    {
+        *show_verse_numbers = true;
+    }
+    let shown = build_deck(&service, &MockSources, "522221")
+        .await
+        .expect("deck with verse numbers builds");
+    let shown_xml = Presentation::open_bytes(&shown)
+        .expect("shown-number deck opens")
+        .slide_xml(0)
+        .expect("shown-number Psalm slide XML");
+    assert!(shown_xml.contains("<a:t>4</a:t>"));
 }
 
 #[tokio::test]
@@ -286,6 +369,7 @@ async fn generated_content_keeps_template_hierarchy_and_safe_sizing() {
             id: "psalm".into(),
             heading: "Psalm".into(),
             reference: String::new(),
+            show_verse_numbers: true,
             tune: None,
             slide_breaks: vec!["one\ntwo\nthree\nfour\nfive\nsix\nseven".into()],
         },
