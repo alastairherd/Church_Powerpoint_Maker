@@ -300,14 +300,17 @@ pub async fn build_deck(
                 ..
             } => {
                 let resolved = if text.trim().is_empty() {
-                    if *source != TeachingSource::WestminsterShorterCatechism {
+                    if selection.trim().is_empty() {
+                        "Choose a teaching question or enter teaching text".to_string()
+                    } else if *source != TeachingSource::WestminsterShorterCatechism {
                         return Err(anyhow!(
                             "automatic teaching loading is not available for this source; enter the teaching text manually"
                         ));
+                    } else {
+                        let number = parse_catechism_selection(selection)?;
+                        let item = sources.catechism(number)?;
+                        format!("{}\n\n{}", item.question, item.answer)
                     }
-                    let number = parse_catechism_selection(selection)?;
-                    let item = sources.catechism(number)?;
-                    format!("{}\n\n{}", item.question, item.answer)
                 } else {
                     text.clone()
                 };

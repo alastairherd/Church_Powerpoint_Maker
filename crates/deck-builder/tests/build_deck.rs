@@ -442,6 +442,59 @@ async fn generated_content_keeps_template_hierarchy_and_safe_sizing() {
     );
 }
 
+#[tokio::test]
+async fn blank_teaching_renders_a_placeholder_but_invalid_automatic_loading_still_fails() {
+    let mut blank = ServiceRecord::new(
+        "blank-teaching",
+        "Blank teaching",
+        NaiveDate::from_ymd_opt(2026, 7, 19).unwrap(),
+        ServicePreset::Am,
+        "Alastair",
+    );
+    blank.components = vec![ServiceComponent::Teaching {
+        id: "teaching".into(),
+        heading: "Teaching".into(),
+        source: deck_builder::TeachingSource::WestminsterShorterCatechism,
+        selection: String::new(),
+        text: String::new(),
+    }];
+
+    let bytes = build_deck(&blank, &MockSources, "522221")
+        .await
+        .expect("blank teaching still builds");
+    let pres = Presentation::open_bytes(&bytes).expect("generated deck opens");
+    assert!(pres
+        .slide_text(0)
+        .unwrap()
+        .contains("Choose a teaching question or enter teaching text"));
+
+    let mut invalid = blank.clone();
+    if let ServiceComponent::Teaching { selection, .. } = &mut invalid.components[0] {
+        *selection = "not a question".into();
+    }
+    let error = build_deck(&invalid, &MockSources, "522221")
+        .await
+        .expect_err("invalid catechism selections still fail");
+    assert!(error
+        .to_string()
+        .contains("enter a catechism question such as 1, Q1, or Q. 1"));
+
+    let mut unsupported = blank;
+    if let ServiceComponent::Teaching {
+        source, selection, ..
+    } = &mut unsupported.components[0]
+    {
+        *source = deck_builder::TeachingSource::Heidelberg1891;
+        *selection = "Q1".into();
+    }
+    let error = build_deck(&unsupported, &MockSources, "522221")
+        .await
+        .expect_err("unsupported automatic sources still fail");
+    assert!(error
+        .to_string()
+        .contains("enter the teaching text manually"));
+}
+
 #[test]
 fn embedded_sources_resolve_catechism_psalm_and_fixed_component() {
     let fixed = FixedComponent::find("confession").expect("confession exists");
