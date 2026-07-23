@@ -315,6 +315,23 @@ pub async fn build_deck(
             ServiceComponent::LiturgyBlock {
                 heading, key, text, ..
             } => {
+                if text.trim().is_empty() {
+                    if let Some(source_slides) = service
+                        .preset
+                        .is_lords_supper()
+                        .then(|| lords_supper_canonical_slides(key))
+                        .flatten()
+                    {
+                        for &source_slide in source_slides {
+                            clone_seed(
+                                &mut pres,
+                                source_slide,
+                                &format!("Lord's Supper {key} canonical liturgy"),
+                            )?;
+                        }
+                        continue;
+                    }
+                }
                 let (speaker, pages) = if text.trim().is_empty() {
                     let component = sources.fixed_component(key)?;
                     (component.speaker, component.slides)
@@ -610,6 +627,21 @@ fn clone_seed(
         .with_context(|| format!("clone TWPC {description} seed slide"))
 }
 
+fn lords_supper_canonical_slides(key: &str) -> Option<&'static [usize]> {
+    match key {
+        "prayer_for_purity" => Some(&[9]),
+        "ten_commandments" => Some(&[10, 11, 12, 13]),
+        "lords_prayer" => Some(&[14]),
+        "confession" => Some(&[23, 24, 25]),
+        "assurance" => Some(&[26]),
+        "comfortable_words" => Some(&[27, 28, 29, 30]),
+        "humble_access" => Some(&[31, 32]),
+        "consecration" => Some(&[33, 34, 35, 36, 37]),
+        "final_blessing" => Some(&[47]),
+        _ => None,
+    }
+}
+
 fn set_shape_text(
     pres: &mut Presentation,
     slide: usize,
@@ -645,7 +677,7 @@ fn psalm_runs(text: &str) -> Vec<Run> {
         };
         let Some(index) = next else {
             let mut run = Run::plain(remaining)
-                .with_font_size(3200)
+                .with_font_size(2800)
                 .with_text_style("Arial Black", "000000");
             run.underline = underlined;
             marked.push(run);
@@ -653,7 +685,7 @@ fn psalm_runs(text: &str) -> Vec<Run> {
         };
         if index > 0 {
             let mut run = Run::plain(&remaining[..index])
-                .with_font_size(3200)
+                .with_font_size(2800)
                 .with_text_style("Arial Black", "000000");
             run.underline = underlined;
             marked.push(run);
@@ -676,7 +708,7 @@ fn psalm_runs(text: &str) -> Vec<Run> {
             let is_superscript = superscript.is_some();
             if current_superscript.is_some_and(|value| value != is_superscript) {
                 let mut split = Run::plain(std::mem::take(&mut current))
-                    .with_font_size(3200)
+                    .with_font_size(2800)
                     .with_text_style("Arial Black", "000000");
                 split.underline = run.underline;
                 split.superscript = current_superscript.unwrap_or(false);
@@ -687,7 +719,7 @@ fn psalm_runs(text: &str) -> Vec<Run> {
         }
         if !current.is_empty() {
             let mut split = Run::plain(current)
-                .with_font_size(3200)
+                .with_font_size(2800)
                 .with_text_style("Arial Black", "000000");
             split.underline = run.underline;
             split.superscript = current_superscript.unwrap_or(false);
@@ -971,6 +1003,9 @@ mod tests {
     #[test]
     fn psalm_runs_preserve_superscript_verse_numbers_and_underlining() {
         let runs = psalm_runs("⁴<underline>Though I</underline> walk through the valley");
+        assert!(runs.iter().all(
+            |run| run.font_size == Some(2800) && run.typeface.as_deref() == Some("Arial Black")
+        ));
         assert!(runs.iter().any(|run| run.superscript && run.text == "4"));
         assert!(runs
             .iter()

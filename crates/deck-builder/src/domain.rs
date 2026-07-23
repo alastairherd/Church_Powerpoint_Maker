@@ -52,6 +52,10 @@ pub enum ServicePreset {
 }
 
 impl ServicePreset {
+    pub fn is_lords_supper(self) -> bool {
+        matches!(self, Self::AmLordsSupper | Self::PmLordsSupper)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Am => "Morning service",

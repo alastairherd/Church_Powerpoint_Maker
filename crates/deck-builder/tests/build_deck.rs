@@ -6,6 +6,7 @@ use deck_builder::{
 };
 use pptx_template::Presentation;
 use std::io::{Cursor, Read};
+use std::sync::{Arc, Mutex};
 use zip::ZipArchive;
 
 struct MockSources;
@@ -28,6 +29,71 @@ impl Sources for MockSources {
         })
     }
 }
+
+struct FailingFixedSources;
+
+#[async_trait]
+impl Sources for FailingFixedSources {
+    async fn scripture(&self, reference: &str) -> anyhow::Result<Scripture> {
+        Ok(Scripture {
+            reference: reference.to_string(),
+            text: "[1] In the beginning God created the heavens and the earth.".to_string(),
+        })
+    }
+
+    fn fixed_component(&self, key: &str) -> anyhow::Result<FixedComponent> {
+        Err(anyhow::anyhow!(
+            "fixed component lookup should not run for {key}"
+        ))
+    }
+}
+
+struct TrackingFixedSources {
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl Sources for TrackingFixedSources {
+    async fn scripture(&self, reference: &str) -> anyhow::Result<Scripture> {
+        Ok(Scripture {
+            reference: reference.to_string(),
+            text: "[1] In the beginning God created the heavens and the earth.".to_string(),
+        })
+    }
+
+    fn fixed_component(&self, key: &str) -> anyhow::Result<FixedComponent> {
+        self.calls.lock().unwrap().push(key.to_string());
+        FixedComponent::find(key)
+    }
+}
+
+fn canonical_liturgy_components() -> Vec<ServiceComponent> {
+    [
+        ("Prayer for Purity", "prayer_for_purity"),
+        ("The Ten Commandments", "ten_commandments"),
+        ("Lord's Prayer", "lords_prayer"),
+        ("Confession", "confession"),
+        ("Assurance of Forgiveness", "assurance"),
+        ("Comfortable Words", "comfortable_words"),
+        ("Prayer of Humble Access", "humble_access"),
+        ("Prayer of Consecration", "consecration"),
+        ("Final Blessing", "final_blessing"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (heading, key))| ServiceComponent::LiturgyBlock {
+        id: format!("liturgy-{}", index + 1),
+        heading: heading.into(),
+        key: key.into(),
+        version: None,
+        text: String::new(),
+    })
+    .collect()
+}
+
+const CANONICAL_LITURGY_SLIDES: &[usize] = &[
+    9, 10, 11, 12, 13, 14, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 47,
+];
 
 #[tokio::test]
 async fn builds_valid_pptx_from_service_record() {
@@ -230,8 +296,8 @@ async fn generated_content_keeps_template_hierarchy_and_safe_sizing() {
     assert!(amen.contains("<a:schemeClr val=\"accent1\"/>") && amen.contains("b=\"1\""));
 
     let psalm = xml.iter().find(|slide| slide.contains("seven")).unwrap();
-    assert!(psalm.contains("sz=\"3200\""));
-    assert!(!psalm.contains("sz=\"2600\""));
+    assert!(psalm.contains("sz=\"2800\""));
+    assert!(!psalm.contains("sz=\"3200\"") && !psalm.contains("sz=\"2600\""));
     assert!(psalm.contains("typeface=\"Arial Black\""));
     assert!(psalm.contains("<a:off x=\"6724800\" y=\"6080400\"/>"));
     let teaching = xml
@@ -318,4 +384,117 @@ async fn imports_original_song_slides_instead_of_rebuilding_their_text() {
             "source slide {index} is preserved"
         );
     }
+}
+
+#[tokio::test]
+async fn lords_supper_presets_clone_canonical_liturgy_slides_without_sources() {
+    let source =
+        Presentation::open_bytes(include_bytes!("../assets/template.pptx")).expect("source opens");
+
+    for preset in [ServicePreset::AmLordsSupper, ServicePreset::PmLordsSupper] {
+        let mut service = ServiceRecord::new(
+            format!("service-{preset:?}"),
+            "Lord's Supper service",
+            NaiveDate::from_ymd_opt(2026, 7, 19).unwrap(),
+            preset,
+            "Alastair",
+        );
+        service.lords_supper = false;
+        service.components = canonical_liturgy_components();
+
+        let bytes = build_deck(&service, &FailingFixedSources, "522221")
+            .await
+            .expect("canonical Lord's Supper deck builds without fixed components");
+        let generated = Presentation::open_bytes(&bytes).expect("generated deck opens");
+
+        assert_eq!(generated.slide_count(), CANONICAL_LITURGY_SLIDES.len());
+        for (generated_index, &source_index) in CANONICAL_LITURGY_SLIDES.iter().enumerate() {
+            assert_eq!(
+                generated.slide_text(generated_index).unwrap(),
+                source.slide_text(source_index).unwrap(),
+                "canonical slide text at generated index {generated_index}"
+            );
+            assert_eq!(
+                generated.slide_xml(generated_index).unwrap(),
+                source.slide_xml(source_index).unwrap(),
+                "canonical slide XML at generated index {generated_index}"
+            );
+        }
+
+        let ten_commandments_minister = generated.slide_xml(1).unwrap();
+        assert!(ten_commandments_minister.contains("typeface=\"Arial Black\""));
+        assert!(ten_commandments_minister.contains("<a:schemeClr val=\"accent1\"/>"));
+        let ten_commandments_all = generated.slide_xml(2).unwrap();
+        assert!(ten_commandments_all.contains("<a:srgbClr val=\"000000\"/>"));
+        assert!(generated.slide_text(2).unwrap().contains("All:"));
+        let communion_all = generated.slide_xml(6).unwrap();
+        assert!(generated.slide_text(6).unwrap().contains("All."));
+        assert!(communion_all.contains("typeface=\"Arial Black\""));
+        let communion_minister = generated.slide_xml(9).unwrap();
+        assert!(communion_minister.contains("<a:t>Minister.</a:t>"));
+        assert!(communion_minister.contains("<a:schemeClr val=\"accent1\"/>"));
+    }
+}
+
+#[tokio::test]
+async fn ordinary_blank_liturgy_uses_fixed_component_renderer() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let source = TrackingFixedSources {
+        calls: Arc::clone(&calls),
+    };
+    let mut service = ServiceRecord::new(
+        "ordinary-service",
+        "Morning service",
+        NaiveDate::from_ymd_opt(2026, 7, 19).unwrap(),
+        ServicePreset::Am,
+        "Alastair",
+    );
+    service.lords_supper = true;
+    service.components = vec![ServiceComponent::LiturgyBlock {
+        id: "confession".into(),
+        heading: "Confession".into(),
+        key: "confession".into(),
+        version: None,
+        text: String::new(),
+    }];
+
+    let bytes = build_deck(&service, &source, "522221")
+        .await
+        .expect("ordinary deck builds");
+    let generated = Presentation::open_bytes(&bytes).expect("generated deck opens");
+
+    assert_eq!(generated.slide_count(), 2);
+    assert_eq!(
+        calls.lock().unwrap().clone(),
+        vec!["confession".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn lords_supper_manual_liturgy_uses_generic_renderer() {
+    let mut service = ServiceRecord::new(
+        "manual-communion-service",
+        "Lord's Supper service",
+        NaiveDate::from_ymd_opt(2026, 7, 19).unwrap(),
+        ServicePreset::PmLordsSupper,
+        "Alastair",
+    );
+    service.components = vec![ServiceComponent::LiturgyBlock {
+        id: "confession".into(),
+        heading: "Confession".into(),
+        key: "confession".into(),
+        version: None,
+        text: "Minister. Manual confession text.".into(),
+    }];
+
+    let bytes = build_deck(&service, &FailingFixedSources, "522221")
+        .await
+        .expect("manual communion text uses generic rendering");
+    let generated = Presentation::open_bytes(&bytes).expect("generated deck opens");
+
+    assert_eq!(generated.slide_count(), 1);
+    assert!(generated
+        .slide_text(0)
+        .unwrap()
+        .contains("Manual confession text."));
 }
