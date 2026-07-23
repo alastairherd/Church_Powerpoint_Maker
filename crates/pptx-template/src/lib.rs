@@ -1374,10 +1374,11 @@ fn runs_xml(runs: &[Run], default_rpr: Option<&str>) -> String {
 fn merge_run_style(rpr: &str, typeface: &str, color: &str) -> String {
     let direct_style = Regex::new(r#"\s(?:baseline|b|i|u)=\"[^\"]*\""#)
         .expect("valid direct run style regex");
-    let latin = Regex::new(r#"(?s)<a:latin\b.*?/>"#).expect("valid latin font regex");
+    let script_fonts =
+        Regex::new(r#"(?s)<a:(?:latin|ea|cs)\b.*?/>"#).expect("valid script font regex");
     let fill = Regex::new(r#"(?s)<a:solidFill>.*?</a:solidFill>"#).expect("valid fill regex");
     let mut out = direct_style.replace_all(rpr, "").to_string();
-    out = latin.replace_all(&out, "").to_string();
+    out = script_fonts.replace_all(&out, "").to_string();
     out = fill.replace_all(&out, "").to_string();
     let fill = if color.eq_ignore_ascii_case("accent1") {
         "<a:schemeClr val=\"accent1\"/>".to_string()
@@ -1385,8 +1386,11 @@ fn merge_run_style(rpr: &str, typeface: &str, color: &str) -> String {
         format!("<a:srgbClr val=\"{}\"/>", xml_escape(color))
     };
     let style = format!(
-        "<a:solidFill>{fill}</a:solidFill><a:latin typeface=\"{}\"/>",
-        xml_escape(typeface)
+        "<a:solidFill>{fill}</a:solidFill>\
+         <a:latin typeface=\"{typeface}\"/>\
+         <a:ea typeface=\"{typeface}\"/>\
+         <a:cs typeface=\"{typeface}\"/>",
+        typeface = xml_escape(typeface)
     );
     if out.ends_with("/>") {
         out.truncate(out.len() - 2);
@@ -1455,6 +1459,26 @@ fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
 fn def_rpr_to_rpr(xml: String) -> String {
     xml.replacen("<a:defRPr", "<a:rPr", 1)
         .replace("</a:defRPr>", "</a:rPr>")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_run_style;
+
+    #[test]
+    fn styled_runs_replace_all_script_font_fallbacks() {
+        let rpr = concat!(
+            r#"<a:rPr lang="en-GB"><a:latin typeface="Calibri"/>"#,
+            r#"<a:ea typeface="+mn-ea"/><a:cs typeface="Calibri"/>"#,
+            r#"<a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:rPr>"#,
+        );
+
+        let styled = merge_run_style(rpr, "Arial Black", "000000");
+
+        assert_eq!(styled.matches(r#"typeface="Arial Black""#).count(), 3);
+        assert!(!styled.contains("Calibri"));
+        assert!(!styled.contains("+mn-ea"));
+    }
 }
 
 fn xml_escape(text: &str) -> String {

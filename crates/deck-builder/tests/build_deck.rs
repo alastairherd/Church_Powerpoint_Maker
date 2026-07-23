@@ -91,6 +91,14 @@ fn canonical_liturgy_components() -> Vec<ServiceComponent> {
     .collect()
 }
 
+fn named_shape_xml<'a>(xml: &'a str, name: &str) -> &'a str {
+    let marker = format!("name=\"{name}\"");
+    let name_start = xml.find(&marker).expect("named shape exists");
+    let start = xml[..name_start].rfind("<p:sp>").expect("shape starts");
+    let end = start + xml[start..].find("</p:sp>").expect("shape ends") + "</p:sp>".len();
+    &xml[start..end]
+}
+
 const CANONICAL_LITURGY_SLIDES: &[usize] = &[
     9, 10, 11, 12, 13, 14, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 47,
 ];
@@ -175,6 +183,40 @@ async fn builds_valid_pptx_from_service_record() {
         liturgy_body_is_black_arial_black,
         "liturgy body runs explicitly use black Arial Black"
     );
+}
+
+#[tokio::test]
+async fn generated_psalm_runs_specify_arial_black_for_all_script_ranges() {
+    let mut service = ServiceRecord::new(
+        "psalm-fonts",
+        "Psalm font regression",
+        NaiveDate::from_ymd_opt(2026, 7, 12).unwrap(),
+        ServicePreset::Am,
+        "Alastair",
+    );
+    service.components = vec![ServiceComponent::Psalm {
+        id: "psalm".into(),
+        heading: "Psalm".into(),
+        reference: "Psalm 1:1-3 (a)".into(),
+        tune: None,
+        slide_breaks: Vec::new(),
+    }];
+
+    let bytes = build_deck(&service, &MockSources, "522221")
+        .await
+        .expect("deck builds");
+    let pres = Presentation::open_bytes(&bytes).expect("generated deck opens");
+    let first_psalm_slide = pres.slide_xml(0).expect("first Psalm slide XML");
+    let first_psalm_body = named_shape_xml(&first_psalm_slide, "TextShape 2");
+
+    for script in ["latin", "ea", "cs"] {
+        assert!(
+            first_psalm_body.contains(&format!("<a:{script} typeface=\"Arial Black\"/>")),
+            "Psalm body should specify Arial Black for {script} script"
+        );
+    }
+    assert!(!first_psalm_body.contains("Calibri"));
+    assert!(!first_psalm_body.contains("+mn-"));
 }
 
 #[tokio::test]

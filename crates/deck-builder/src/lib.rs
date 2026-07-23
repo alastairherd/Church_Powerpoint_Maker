@@ -475,7 +475,7 @@ fn notice_runs(rows: &[NoticeRow]) -> Vec<Run> {
 }
 
 pub fn propose_psalm_groups(stanzas: &[String]) -> Vec<String> {
-    const MAX_RENDERED_LINES: usize = 6;
+    const MAX_RENDERED_LINES: usize = 8;
     const APPROXIMATE_CHARACTERS_PER_LINE: usize = 55;
 
     let mut groups = Vec::new();
@@ -967,20 +967,23 @@ mod tests {
     }
 
     #[test]
-    fn psalm_grouping_preserves_every_stanza() {
+    fn psalm_grouping_preserves_every_stanza_and_fits_two_common_stanzas() {
         let stanzas = vec![
-            "a\nb\nc\nd".to_string(),
-            "e\nf\ng\nh".to_string(),
+            "1Blessed is the one who turns away\nfrom where the wicked walk,\nWho does not stand in sinners' paths\nor sit with those who mock."
+                .to_string(),
+            "2Instead he finds God's holy law\nhis joy and great delight;\nHe makes the precepts of the LORD\nhis study day and night."
+                .to_string(),
             "i".to_string(),
         ];
         let pages = propose_psalm_groups(&stanzas);
         assert_eq!(pages.join("\n\n"), stanzas.join("\n\n"));
+        assert_eq!(pages[0], format!("{}\n\n{}", stanzas[0], stanzas[1]));
         assert_eq!(pages.len(), 2);
     }
 
     #[test]
     fn psalm_grouping_never_splits_an_oversized_stanza() {
-        let oversized = (1..=8)
+        let oversized = (1..=9)
             .map(|line| format!("line {line}"))
             .collect::<Vec<_>>()
             .join("\n");
