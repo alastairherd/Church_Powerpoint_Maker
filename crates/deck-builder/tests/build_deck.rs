@@ -138,6 +138,90 @@ async fn generated_deck_contains_parseable_slide_xml() {
     }
 }
 
+#[tokio::test]
+async fn generated_content_keeps_template_hierarchy_and_safe_sizing() {
+    let mut service = ServiceRecord::new(
+        "service-content",
+        "Content regression",
+        NaiveDate::from_ymd_opt(2026, 7, 19).unwrap(),
+        ServicePreset::Am,
+        "Alastair",
+    );
+    service.components = vec![
+        ServiceComponent::Notices {
+            id: "notices".into(),
+            heading: "Notices".into(),
+            rows: vec![
+                deck_builder::NoticeRow {
+                    when: "Today".into(),
+                    title: "Notice title".into(),
+                    details: "Details remain readable".into(),
+                    emphasis: true,
+                },
+            ],
+        },
+        ServiceComponent::CallToWorship {
+            id: "call".into(),
+            heading: "Call to Worship".into(),
+            reference: "Psalm 96:2".into(),
+            text: "[1] Sing to the LORD; [2] bless his name.".into(),
+            external_source_failed: false,
+        },
+        ServiceComponent::LiturgyBlock {
+            id: "confession".into(),
+            heading: "Confession".into(),
+            key: "confession".into(),
+            version: Some(1),
+            text: String::new(),
+        },
+        ServiceComponent::Psalm {
+            id: "psalm".into(),
+            heading: "Psalm".into(),
+            reference: String::new(),
+            tune: None,
+            slide_breaks: vec!["one\ntwo\nthree\nfour\nfive\nsix\nseven".into()],
+        },
+        ServiceComponent::Teaching {
+            id: "teaching".into(),
+            heading: "Teaching".into(),
+            source: deck_builder::TeachingSource::WestminsterShorterCatechism,
+            selection: "Q. 1".into(),
+            text: String::new(),
+        },
+    ];
+
+    let bytes = build_deck(&service, &MockSources, "522221")
+        .await
+        .expect("content deck builds");
+    let pres = Presentation::open_bytes(&bytes).expect("generated deck opens");
+    let xml: Vec<_> = (0..pres.slide_count())
+        .map(|index| pres.slide_xml(index).unwrap())
+        .collect();
+    let notices = xml.iter().find(|slide| slide.contains("Notice title")).unwrap();
+    assert!(notices.contains("typeface=\"Arial Black\""));
+    assert!(notices.contains("typeface=\"Arial\""));
+    assert!(notices.contains("sz=\"2200\""));
+    assert!(notices.contains("sz=\"2800\""));
+    assert!(notices.contains("b=\"1\""));
+
+    let call = xml.iter().find(|slide| slide.contains("Sing to the LORD")).unwrap();
+    assert!(!call.contains("[1]") && !call.contains("[2]"));
+    assert!(!call.contains("baseline=\"30000\""));
+    assert!(call.contains("Psalm 96:2"));
+
+    let liturgy = xml.iter().find(|slide| slide.contains("All.")).unwrap();
+    assert!(liturgy.contains("typeface=\"Liberation Serif\""));
+    assert!(liturgy.contains("schemeClr val=\"accent1\""));
+    assert!(liturgy.contains("typeface=\"Arial\""));
+    assert!(xml.iter().any(|slide| slide.contains("Amen.")));
+
+    let psalm = xml.iter().find(|slide| slide.contains("seven")).unwrap();
+    assert!(psalm.contains("sz=\"2600\""));
+    assert!(!psalm.contains("sz=\"3200\""));
+    assert!(psalm.contains("<a:off x=\"6366355\" y=\"5500000\"/>"));
+    assert!(xml.iter().any(|slide| slide.contains("What is the chief end of man?")));
+}
+
 #[test]
 fn embedded_sources_resolve_catechism_psalm_and_fixed_component() {
     let fixed = FixedComponent::find("confession").expect("confession exists");
@@ -150,6 +234,9 @@ fn embedded_sources_resolve_catechism_psalm_and_fixed_component() {
     assert_eq!(psalm.stanzas.len(), 3);
     assert_eq!(psalm_with_typographic_dash.meter, "11 11 11");
     assert_eq!(psalm_with_typographic_dash.stanzas.len(), 5);
+    for selection in ["1", "Q1", "Q. 1", "Question 1"] {
+        assert_eq!(deck_builder::parse_catechism_selection(selection).unwrap(), 1);
+    }
 }
 
 fn xml_is_parseable(xml: &str) -> bool {

@@ -10,15 +10,11 @@ fn converts_original_american_spellings_to_british() {
 }
 
 #[test]
-fn converts_esv_verse_markers_to_superscript_runs() {
+fn removes_esv_verse_markers_from_plain_runs() {
     let runs = scripture_runs("[1] In the beginning [2] And the earth");
 
-    assert_eq!(runs[0].text, "1");
-    assert!(runs[0].superscript);
-    assert_eq!(runs[1].text, "In the beginning ");
-    assert!(!runs[1].superscript);
-    assert_eq!(runs[2].text, "2");
-    assert!(runs[2].superscript);
+    assert_eq!(runs.iter().map(|run| run.text.as_str()).collect::<String>(), "In the beginning And the earth");
+    assert!(runs.iter().all(|run| !run.superscript));
 }
 
 #[test]

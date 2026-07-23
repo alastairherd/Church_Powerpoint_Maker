@@ -44,6 +44,7 @@ pub struct Run {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    pub font_size: Option<u32>,
     pub typeface: Option<String>,
     pub color: Option<String>,
 }
@@ -56,6 +57,7 @@ impl Run {
             bold: false,
             italic: false,
             underline: false,
+            font_size: None,
             typeface: None,
             color: None,
         }
@@ -68,6 +70,7 @@ impl Run {
             bold: false,
             italic: false,
             underline: false,
+            font_size: None,
             typeface: None,
             color: None,
         }
@@ -80,6 +83,7 @@ impl Run {
             bold: false,
             italic: false,
             underline: true,
+            font_size: None,
             typeface: None,
             color: None,
         }
@@ -88,6 +92,11 @@ impl Run {
     pub fn with_text_style(mut self, typeface: impl Into<String>, color: impl Into<String>) -> Self {
         self.typeface = Some(typeface.into());
         self.color = Some(color.into());
+        self
+    }
+
+    pub fn with_font_size(mut self, font_size: u32) -> Self {
+        self.font_size = Some(font_size);
         self
     }
 }
@@ -1025,6 +1034,20 @@ impl ShapeMut<'_> {
         self.presentation.files.insert(part, xml.into_bytes());
         Ok(())
     }
+
+    pub fn set_position(self, x: u64, y: u64, cx: u64, cy: u64) -> Result<()> {
+        let part = self.presentation.slides[self.slide_index].part.clone();
+        let mut xml = self.presentation.part_string(&part)?;
+        let (start, end, block) = find_shape_block(&xml, &self.shape_name)?;
+        let xfrm_re = Regex::new(r#"(?s)<a:xfrm>.*?</a:xfrm>"#).expect("valid shape transform regex");
+        let xfrm = format!(
+            "<a:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></a:xfrm>"
+        );
+        let updated = xfrm_re.replace(&block, xfrm.as_str()).to_string();
+        xml.replace_range(start..end, &updated);
+        self.presentation.files.insert(part, xml.into_bytes());
+        Ok(())
+    }
 }
 
 pub struct PlaceholderMut<'a> {
@@ -1337,24 +1360,32 @@ fn runs_xml(runs: &[Run], default_rpr: Option<&str>) -> String {
         .map(|run| {
             let attrs = run_attrs(run);
             let mut rpr = default_rpr
-                .map(|default| merge_run_attrs(default, &attrs))
-                .unwrap_or_else(|| format!("<a:rPr lang=\"en-GB\"{attrs}/>"));
+                .map(str::to_string)
+                .unwrap_or_else(|| "<a:rPr lang=\"en-GB\"/>".to_string());
             if let Some(typeface) = &run.typeface {
                 rpr = merge_run_style(&rpr, typeface, run.color.as_deref().unwrap_or("000000"));
             }
+            rpr = merge_run_attrs(&rpr, &attrs);
             format!("<a:r>{rpr}<a:t>{}</a:t></a:r>", xml_escape(&run.text))
         })
         .collect::<String>()
 }
 
 fn merge_run_style(rpr: &str, typeface: &str, color: &str) -> String {
+    let direct_style = Regex::new(r#"\s(?:baseline|b|i|u)=\"[^\"]*\""#)
+        .expect("valid direct run style regex");
     let latin = Regex::new(r#"(?s)<a:latin\b.*?/>"#).expect("valid latin font regex");
     let fill = Regex::new(r#"(?s)<a:solidFill>.*?</a:solidFill>"#).expect("valid fill regex");
-    let mut out = latin.replace_all(rpr, "").to_string();
+    let mut out = direct_style.replace_all(rpr, "").to_string();
+    out = latin.replace_all(&out, "").to_string();
     out = fill.replace_all(&out, "").to_string();
+    let fill = if color.eq_ignore_ascii_case("accent1") {
+        "<a:schemeClr val=\"accent1\"/>".to_string()
+    } else {
+        format!("<a:srgbClr val=\"{}\"/>", xml_escape(color))
+    };
     let style = format!(
-        "<a:solidFill><a:srgbClr val=\"{}\"/></a:solidFill><a:latin typeface=\"{}\"/>",
-        xml_escape(color),
+        "<a:solidFill>{fill}</a:solidFill><a:latin typeface=\"{}\"/>",
         xml_escape(typeface)
     );
     if out.ends_with("/>") {
@@ -1370,6 +1401,9 @@ fn merge_run_style(rpr: &str, typeface: &str, color: &str) -> String {
 
 fn run_attrs(run: &Run) -> String {
     let mut attrs = String::new();
+    if let Some(font_size) = run.font_size {
+        attrs.push_str(&format!(" sz=\"{font_size}\""));
+    }
     if run.superscript {
         attrs.push_str(" baseline=\"30000\"");
     }

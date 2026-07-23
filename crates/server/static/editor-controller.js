@@ -50,7 +50,7 @@ export function createEditorController({
     return `${kind}:${componentId}`;
   }
 
-  async function runLoader(kind, componentId, reference, url, parseSuccess, applySuccess, applyFailure = null) {
+  async function runLoader(kind, componentId, reference, url, parseSuccess, applySuccess, applyFailure = null, currentReference = component => component.reference) {
     const key = loaderKey(kind, componentId);
     const previous = state.loaders.get(key) || { sequence: 0, pending: false, reference: '', error: null };
     if (previous.pending) return;
@@ -71,8 +71,8 @@ export function createEditorController({
       const parsed = parseSuccess(data);
       const current = findComponent(componentId);
       const latest = state.loaders.get(key);
-      if (!current || !latest || latest.sequence !== requestSequence || current.reference !== reference) {
-        if (current && latest && current.reference !== reference) {
+      if (!current || !latest || latest.sequence !== requestSequence || currentReference(current) !== reference) {
+        if (current && latest && currentReference(current) !== reference) {
           latest.error = 'The reference changed while this request was loading. Load the new range explicitly.';
           (render.loader || noop)(componentId, kind);
         }
@@ -85,7 +85,7 @@ export function createEditorController({
       const latest = state.loaders.get(key);
       const current = findComponent(componentId);
       if (latest && latest.sequence === requestSequence && current) {
-        if (current.reference !== reference) {
+        if (currentReference(current) !== reference) {
           latest.error = 'The reference changed while this request was loading. Load the new range explicitly.';
         } else {
           latest.error = timedOut ? 'The request timed out after 10 seconds. Retry.' : error.message;
@@ -120,6 +120,13 @@ export function createEditorController({
     return data.text;
   }
 
+  function parseTeaching(data) {
+    if (typeof data !== 'object' || data === null || typeof data.question !== 'string' || typeof data.answer !== 'string' || !data.question.trim() || !data.answer.trim()) {
+      throw new Error('Teaching response was malformed. Retry.');
+    }
+    return `${data.question}\n\n${data.answer}`;
+  }
+
   function loadPsalm(componentId, reference) {
     return runLoader('psalm', componentId, reference, `/api/psalm?reference=${encodeURIComponent(reference)}`, parsePsalm, (component, data) => {
       component.slide_breaks = data.slides;
@@ -140,6 +147,19 @@ export function createEditorController({
       component => {
         component.external_source_failed = true;
       },
+    );
+  }
+
+  function loadTeaching(componentId, source, selection) {
+    return runLoader(
+      'teaching',
+      componentId,
+      selection,
+      `/api/teaching?source=${encodeURIComponent(source)}&selection=${encodeURIComponent(selection)}`,
+      parseTeaching,
+      (component, text) => { component.text = text; },
+      null,
+      component => component.selection,
     );
   }
 
@@ -329,5 +349,6 @@ export function createEditorController({
     isSaving,
     loadPsalm,
     loadEsv,
+    loadTeaching,
   };
 }

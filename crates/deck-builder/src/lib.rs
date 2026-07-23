@@ -117,11 +117,11 @@ pub async fn build_deck(
                 set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
             }
             ServiceComponent::Notices { heading, rows, .. } => {
-                let pages = paginate_notices(rows, 5);
+                let pages = paginate_notice_rows(rows, 5);
                 for page in pages {
                     let slide = clone_seed(&mut pres, SEED_NOTICES, "notices")?;
                     set_shape_text(&mut pres, slide, "Title 1", heading)?;
-                    set_shape_text(&mut pres, slide, "TextBox 2", &page)?;
+                    set_shape_runs(&mut pres, slide, "TextBox 2", &notice_runs(&page))?;
                 }
             }
             ServiceComponent::CallToWorship {
@@ -235,6 +235,9 @@ pub async fn build_deck(
                     vec!["Choose a psalm passage".to_string()]
                 } else {
                     slides
+                        .into_iter()
+                        .flat_map(|slide| textproc::split_lines(&slide, 6, usize::MAX))
+                        .collect()
                 };
                 let count = slides.len();
                 for (index, stanza) in slides.into_iter().enumerate() {
@@ -248,6 +251,9 @@ pub async fn build_deck(
                     set_shape_runs(&mut pres, slide, "TextShape 2", &psalm_runs(&stanza))?;
                     if index + 1 == count {
                         pres.copy_shape(SEED_SONG_FINAL, "TextBox 4", slide, "Psalm Credits")?;
+                        pres.slide_mut(slide)?
+                            .shape("Psalm Credits")?
+                            .set_position(6366355, 5500000, 4146550, 1754326)?;
                         let tune_credit = tune
                             .as_ref()
                             .map(|pin| {
@@ -290,18 +296,21 @@ pub async fn build_deck(
                 text,
                 ..
             } => {
-                let resolved = if text.trim().is_empty()
-                    && *source == TeachingSource::WestminsterShorterCatechism
-                {
-                    selection
-                        .parse::<u16>()
-                        .ok()
-                        .and_then(|number| sources.catechism(number).ok())
-                        .map(|item| format!("{}\n\n{}", item.question, item.answer))
-                        .unwrap_or_default()
+                let resolved = if text.trim().is_empty() {
+                    if *source != TeachingSource::WestminsterShorterCatechism {
+                        return Err(anyhow!(
+                            "automatic teaching loading is not available for this source; enter the teaching text manually"
+                        ));
+                    }
+                    let number = parse_catechism_selection(selection)?;
+                    let item = sources.catechism(number)?;
+                    format!("{}\n\n{}", item.question, item.answer)
                 } else {
                     text.clone()
                 };
+                if resolved.trim().is_empty() {
+                    return Err(anyhow!("teaching text cannot be empty"));
+                }
                 let slide = clone_seed(&mut pres, SEED_TEACHING, "teaching")?;
                 set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
                 set_shape_text(&mut pres, slide, "TextShape 3", &resolved)?;
@@ -309,20 +318,27 @@ pub async fn build_deck(
             ServiceComponent::LiturgyBlock {
                 heading, key, text, ..
             } => {
-                let pages = if text.trim().is_empty() {
-                    sources
-                        .fixed_component(key)
-                        .map(|component| component.slides)
-                        .unwrap_or_else(|_| vec![String::new()])
+                let (speaker, pages) = if text.trim().is_empty() {
+                    let component = sources.fixed_component(key)?;
+                    (component.speaker, component.slides)
                 } else {
-                    text.split("\n\n").map(str::to_string).collect()
+                    (
+                        sources
+                            .fixed_component(key)
+                            .map(|component| component.speaker)
+                            .unwrap_or_default(),
+                        text.split("\n\n").map(str::to_string).collect(),
+                    )
                 };
-                for page in pages {
+                for (index, page) in pages.into_iter().enumerate() {
                     let slide = clone_seed(&mut pres, SEED_LITURGY, "liturgy")?;
                     set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
-                    pres.slide_mut(slide)?
-                        .shape("TextShape 2")?
-                        .set_rich_text(&[Run::plain(&page).with_text_style("Arial", "000000")])?;
+                    set_shape_runs(
+                        &mut pres,
+                        slide,
+                        "TextShape 2",
+                        &liturgy_runs(&speaker, &page, index == 0),
+                    )?;
                 }
             }
             ServiceComponent::CustomTextImage {
@@ -377,8 +393,65 @@ pub fn paginate_notices(rows: &[NoticeRow], rows_per_slide: usize) -> Vec<String
         .collect()
 }
 
+fn paginate_notice_rows(rows: &[NoticeRow], rows_per_slide: usize) -> Vec<Vec<NoticeRow>> {
+    if rows.is_empty() {
+        return vec![Vec::new()];
+    }
+    rows.chunks(rows_per_slide.max(1))
+        .map(|page| page.to_vec())
+        .collect()
+}
+
+fn notice_runs(rows: &[NoticeRow]) -> Vec<Run> {
+    let mut runs = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let when = row.when.trim();
+        let title = row.title.trim();
+        let details = row.details.trim();
+        let lead_separator = if when.is_empty() || title.is_empty() {
+            ""
+        } else {
+            " · "
+        };
+        if !when.is_empty() {
+            runs.push(
+                Run::plain(when)
+                    .with_font_size(2800)
+                    .with_text_style("Arial Black", "accent1"),
+            );
+        }
+        if !lead_separator.is_empty() {
+            runs.push(
+                Run::plain(lead_separator)
+                    .with_font_size(2800)
+                    .with_text_style("Arial Black", "accent1"),
+            );
+        }
+        if !title.is_empty() {
+            let mut title_run = Run::plain(title).with_font_size(2800).with_text_style(
+                "Arial Black",
+                if row.emphasis { "accent1" } else { "000000" },
+            );
+            title_run.bold = row.emphasis;
+            runs.push(title_run);
+        }
+        if !details.is_empty() {
+            runs.push(Run::plain("\n"));
+            runs.push(
+                Run::plain(details)
+                    .with_font_size(2200)
+                    .with_text_style("Arial", "000000"),
+            );
+        }
+        if index + 1 < rows.len() {
+            runs.push(Run::plain("\n\n"));
+        }
+    }
+    runs
+}
+
 pub fn propose_psalm_groups(stanzas: &[String]) -> Vec<String> {
-    const MAX_RENDERED_LINES: usize = 8;
+    const MAX_RENDERED_LINES: usize = 6;
     const MAX_CHARACTERS: usize = 360;
 
     let mut groups = Vec::new();
@@ -557,13 +630,17 @@ fn psalm_runs(text: &str) -> Vec<Run> {
             (None, None) => None,
         };
         let Some(index) = next else {
-            let mut run = Run::plain(remaining);
+            let mut run = Run::plain(remaining)
+                .with_font_size(2600)
+                .with_text_style("Arial", "000000");
             run.underline = underlined;
             marked.push(run);
             break;
         };
         if index > 0 {
-            let mut run = Run::plain(&remaining[..index]);
+            let mut run = Run::plain(&remaining[..index])
+                .with_font_size(2600)
+                .with_text_style("Arial", "000000");
             run.underline = underlined;
             marked.push(run);
         }
@@ -584,7 +661,9 @@ fn psalm_runs(text: &str) -> Vec<Run> {
             let superscript = normalise_superscript(character);
             let is_superscript = superscript.is_some();
             if current_superscript.is_some_and(|value| value != is_superscript) {
-                let mut split = Run::plain(std::mem::take(&mut current));
+                let mut split = Run::plain(std::mem::take(&mut current))
+                    .with_font_size(2600)
+                    .with_text_style("Arial", "000000");
                 split.underline = run.underline;
                 split.superscript = current_superscript.unwrap_or(false);
                 runs.push(split);
@@ -593,7 +672,9 @@ fn psalm_runs(text: &str) -> Vec<Run> {
             current.push(superscript.unwrap_or(character));
         }
         if !current.is_empty() {
-            let mut split = Run::plain(current);
+            let mut split = Run::plain(current)
+                .with_font_size(2600)
+                .with_text_style("Arial", "000000");
             split.underline = run.underline;
             split.superscript = current_superscript.unwrap_or(false);
             runs.push(split);
@@ -617,6 +698,98 @@ fn normalise_superscript(character: char) -> Option<char> {
         '⁻' => '-',
         _ => return None,
     })
+}
+
+pub fn parse_catechism_selection(selection: &str) -> anyhow::Result<u16> {
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^\s*(?:q(?:uestion)?\s*\.?\s*)?(\d{1,3})\s*$")
+            .expect("valid catechism selection regex")
+    });
+    RE.captures(selection.trim())
+        .and_then(|captures| captures.get(1))
+        .and_then(|number| number.as_str().parse::<u16>().ok())
+        .filter(|number| *number > 0)
+        .ok_or_else(|| anyhow!("enter a catechism question such as 1, Q1, or Q. 1"))
+}
+
+fn liturgy_runs(speaker: &str, text: &str, include_speaker: bool) -> Vec<Run> {
+    let (existing_cue, body) = leading_liturgy_cue(text, speaker);
+    let cue = existing_cue.or_else(|| {
+        include_speaker
+            .then(|| speaker.trim().to_string())
+            .filter(|cue| !cue.is_empty())
+    });
+    let mut runs = Vec::new();
+    if let Some(cue) = cue {
+        runs.push(
+            Run::plain(cue)
+                .with_font_size(4000)
+                .with_text_style("Liberation Serif", "accent1"),
+        );
+        runs.last_mut().expect("cue run").italic = true;
+        runs.last_mut().expect("cue run").bold = true;
+        if !body.trim().is_empty() {
+            runs.push(
+                Run::plain("  ")
+                    .with_font_size(4000)
+                    .with_text_style("Arial Black", "accent1"),
+            );
+        }
+    }
+
+    let body = body.trim_start();
+    if body.is_empty() {
+        return runs;
+    }
+    static AMEN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bAmen\.?$").expect("valid Amen regex"));
+    if let Some(amen) = AMEN_RE.find(body.trim_end()) {
+        let body_end = body.trim_end().len();
+        let prefix = &body[..amen.start()];
+        if !prefix.is_empty() {
+            runs.push(
+                Run::plain(prefix)
+                    .with_font_size(4000)
+                    .with_text_style("Arial", "000000"),
+            );
+        }
+        let mut amen_run = Run::plain(&body[amen.start()..body_end])
+            .with_font_size(4000)
+            .with_text_style("Arial", "000000");
+        amen_run.bold = true;
+        runs.push(amen_run);
+    } else {
+        runs.push(
+            Run::plain(body)
+                .with_font_size(4000)
+                .with_text_style("Arial", "000000"),
+        );
+    }
+    runs
+}
+
+fn leading_liturgy_cue<'a>(text: &'a str, speaker: &str) -> (Option<String>, &'a str) {
+    let text = text.trim_start();
+    let mut candidates = vec![speaker.trim()];
+    candidates.extend(["Minister.", "All."]);
+    for candidate in candidates {
+        if candidate.is_empty()
+            || !text
+                .get(..candidate.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(candidate))
+            || !text
+                .get(candidate.len()..)
+                .is_none_or(|rest| {
+                    rest.is_empty() || rest.chars().next().is_some_and(char::is_whitespace)
+                })
+        {
+            continue;
+        }
+        return (
+            Some(text[..candidate.len()].to_string()),
+            text[candidate.len()..].trim_start(),
+        );
+    }
+    (None, text)
 }
 
 #[derive(Debug, Deserialize)]

@@ -14,7 +14,7 @@ use chrono::{Duration as ChronoDuration, NaiveDate, Utc};
 use deck_builder::{
     build_deck, propose_psalm_groups, Catechism, FixedComponent, GeneratedDeckVersion,
     GlobalSettingsVersion, Psalm, ServicePreset, ServiceRecord, ServiceStatus,
-    Sources, StoredSong,
+    Sources, StoredSong, TeachingSource,
 };
 use hmac::{Hmac, Mac};
 use http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, ETAG, SET_COOKIE};
@@ -124,6 +124,7 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
         .route("/api/presets", get(list_presets))
         .route("/api/scripture", get(fetch_scripture))
         .route("/api/psalm", get(fetch_psalm))
+        .route("/api/teaching", get(fetch_teaching))
         .route("/api/songs", get(songs::list).post(songs::create))
         .route("/api/songs/:id", get(songs::get).delete(songs::archive))
         .route("/api/songs/:id/restore", post(songs::restore))
@@ -455,6 +456,35 @@ async fn fetch_psalm(
         "reference": psalm.title,
         "meter": psalm.meter,
         "slides": propose_psalm_groups(&psalm.stanzas),
+    })))
+}
+
+#[derive(Deserialize)]
+struct TeachingQuery {
+    source: TeachingSource,
+    selection: String,
+}
+
+async fn fetch_teaching(
+    State(state): State<AppState>,
+    Query(query): Query<TeachingQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if query.source != TeachingSource::WestminsterShorterCatechism {
+        return Err(AppError::bad_request(
+            "automatic loading is only available for the Westminster Shorter Catechism; enter this source manually",
+        ));
+    }
+    let number = deck_builder::parse_catechism_selection(&query.selection)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    let item = state
+        .sources
+        .catechism(number)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    Ok(Json(json!({
+        "source": query.source,
+        "selection": number,
+        "question": item.question,
+        "answer": item.answer,
     })))
 }
 

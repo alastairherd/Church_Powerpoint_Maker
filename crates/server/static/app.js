@@ -283,6 +283,7 @@ export function createEditorApp({
     }
     if (component.type === 'psalm') renderLoaderState(component.id, 'psalm');
     if (component.type === 'call_to_worship') renderLoaderState(component.id, 'esv');
+    if (component.type === 'teaching') renderLoaderState(component.id, 'teaching');
   }
 
   function editorHelp(type) {
@@ -430,9 +431,34 @@ export function createEditorApp({
       const option = doc.createElement('option'); option.value = value; option.textContent = label; select.append(option);
     });
     select.value = component.source;
-    select.addEventListener('change', () => setComponentField(component.id, 'source', select.value, 'summary'));
+    select.addEventListener('change', () => {
+      setComponentField(component.id, 'source', select.value, 'summary');
+      renderEditor();
+    });
     source.append(select); fields.append(source);
-    fields.append(textField('Question or section', component.id, 'selection', component.selection, '', 'summary'));
+    fields.append(textField('Question or section', component.id, 'selection', component.selection, 'e.g. 1, Q1, or Q. 1', 'summary'));
+    if (component.source === 'westminster_shorter_catechism') {
+      const inline = doc.createElement('div'); inline.className = 'inline-action';
+      const loadButton = button('Load WSC question', 'button button-secondary');
+      loadButton.dataset.loaderKind = 'teaching';
+      loadButton.dataset.componentId = component.id;
+      const error = loaderErrorNode('teaching', component.id);
+      loadButton.setAttribute('aria-describedby', error.id);
+      loadButton.addEventListener('click', () => {
+        const current = controller.findComponent(component.id);
+        if (!current?.selection.trim()) {
+          showToast('Enter a catechism question, for example Q. 1.');
+          return;
+        }
+        void controller.loadTeaching(component.id, current.source, current.selection);
+      });
+      inline.append(loadButton, error); fields.append(inline);
+    }
+    const note = doc.createElement('p'); note.className = 'field-note';
+    note.textContent = component.source === 'westminster_shorter_catechism'
+      ? 'Load retrieves the embedded WSC question and answer into editable text.'
+      : 'Automatic loading is unavailable for this source; enter and save the teaching text manually.';
+    fields.append(note);
     fields.append(textArea('Editable text', component.id, 'text', component.text, 'The wording saved here is pinned when the service is completed.'));
   }
 
@@ -495,7 +521,7 @@ export function createEditorApp({
       if (component.type === 'song' && !component.song && !(component.lyric_slides || []).some(text => text.trim())) warnings.push({ title: headingOf(component), detail: 'Choose a library song or enter lyric slides.' });
       if (['psalm', 'reading', 'call_to_worship'].includes(component.type) && !(component.reference || '').trim()) warnings.push({ title: headingOf(component), detail: 'Add a Bible or psalm reference.' });
       if (component.type === 'call_to_worship' && component.external_source_failed) warnings.push({ title: headingOf(component), detail: 'ESV fetch failed. Check the manually entered wording.' });
-      if (component.type === 'teaching' && !(component.selection || '').trim() && !(component.text || '').trim()) warnings.push({ title: headingOf(component), detail: 'Choose a section and confirm its wording.' });
+      if (component.type === 'teaching' && !(component.text || '').trim()) warnings.push({ title: headingOf(component), detail: 'Load the selected source or enter teaching text manually.' });
       if ((component.lyric_slides || component.slide_breaks || []).some(text => text.length > 620)) warnings.push({ title: headingOf(component), detail: 'A slide is unusually dense. Consider another break.' });
     });
     const possible = Math.max(1, service.components.length);
@@ -628,8 +654,10 @@ export function createEditorApp({
     const loader = controller.getState().loaders.get(`${kind}:${componentId}`) || { pending: false, error: null };
     buttonElement.disabled = loader.pending;
     buttonElement.textContent = loader.pending
-      ? (kind === 'psalm' ? 'Loading…' : 'Fetching…')
-      : (loader.error ? (kind === 'psalm' ? 'Retry Psalm text' : 'Retry ESV text') : (kind === 'psalm' ? 'Load Psalm text' : 'Fetch ESV text'));
+      ? (kind === 'psalm' || kind === 'teaching' ? 'Loading…' : 'Fetching…')
+      : (loader.error
+        ? (kind === 'psalm' ? 'Retry Psalm text' : kind === 'teaching' ? 'Retry WSC question' : 'Retry ESV text')
+        : (kind === 'psalm' ? 'Load Psalm text' : kind === 'teaching' ? 'Load WSC question' : 'Fetch ESV text'));
     error.hidden = !loader.error;
     error.textContent = loader.error || '';
   }

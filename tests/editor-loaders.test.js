@@ -181,4 +181,16 @@ describe('editor loaders', () => {
     pending.resolve(jsonResponse({ ok: true, reference: 'Psalm 96:2', text: 'Fetched' }));
     await Promise.all([first, second]);
   });
+
+  it('loads a friendly WSC selection into editable teaching text', async () => {
+    const service = makeService({ components: [{ id: 'teaching-1', type: 'teaching', heading: 'Teaching', source: 'westminster_shorter_catechism', selection: 'Q. 1', text: '' }] });
+    const controller = loaderController(async url => {
+      expect(url).toContain('/api/teaching?');
+      expect(url).toContain('selection=Q.%201');
+      return jsonResponse({ source: 'westminster_shorter_catechism', selection: 1, question: 'What is the chief end of man?', answer: 'To glorify God, and to enjoy him forever.' });
+    });
+    await controller.loadService(service);
+    await controller.loadTeaching('teaching-1', service.components[0].source, service.components[0].selection);
+    expect(service.components[0].text).toBe('What is the chief end of man?\n\nTo glorify God, and to enjoy him forever.');
+  });
 });

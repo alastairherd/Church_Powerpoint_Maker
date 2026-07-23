@@ -242,6 +242,43 @@ async fn scripture_and_psalm_shapes_match_editor_loaders() {
 }
 
 #[tokio::test]
+async fn teaching_loader_accepts_friendly_wsc_selection_and_rejects_unsupported_automatic_sources() {
+    let (app, cookie, _) = authenticated().await;
+    let teaching = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/teaching?source=westminster_shorter_catechism&selection=Q.%201")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(teaching.status(), StatusCode::OK);
+    let body = to_bytes(teaching.into_body(), usize::MAX).await.unwrap();
+    let teaching: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(teaching["selection"], 1);
+    assert_eq!(teaching["question"], "What is the chief end of man?");
+    assert!(teaching["answer"].as_str().unwrap().contains("glorify God"));
+
+    let unsupported = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/teaching?source=heidelberg1891&selection=Q1")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unsupported.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(unsupported.into_body(), usize::MAX).await.unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(error["error"].as_str().unwrap().contains("manually"));
+}
+
+#[tokio::test]
 async fn stale_autosave_returns_a_conflict_error_shape() {
     let (app, cookie, csrf) = authenticated().await;
     let created = app
@@ -477,10 +514,11 @@ async fn generates_an_immutable_revision_without_locking() {
     Presentation::open_bytes(&body).unwrap().validate().unwrap();
 
     let history = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!("/api/services/{id}/history"))
-                .header("cookie", cookie)
+                .header("cookie", &cookie)
                 .body(Body::empty())
                 .unwrap(),
         )

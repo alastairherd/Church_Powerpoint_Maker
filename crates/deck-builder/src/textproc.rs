@@ -53,15 +53,13 @@ pub fn british_spellings(text: &str) -> String {
 }
 
 pub fn scripture_runs(text: &str) -> Vec<Run> {
-    let marker = Regex::new(r"\[([^\[\]]+)\]\s*").expect("valid scripture marker regex");
+    let marker = Regex::new(r"\[\d+\]\s*").expect("valid scripture marker regex");
     let mut runs = Vec::new();
     let mut last = 0;
-    for cap in marker.captures_iter(text) {
-        let full = cap.get(0).expect("full match");
+    for full in marker.find_iter(text) {
         if full.start() > last {
             runs.push(Run::plain(&text[last..full.start()]));
         }
-        runs.push(Run::superscript(cap[1].to_string()));
         last = full.end();
     }
     if last < text.len() {
