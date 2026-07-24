@@ -474,10 +474,12 @@ fn notice_runs(rows: &[NoticeRow]) -> Vec<Run> {
             );
         }
         if !title.is_empty() {
-            let mut title_run = Run::plain(title).with_font_size(NOTICE_FONT_SIZE).with_text_style(
-                "Arial Black",
-                if row.emphasis { "FF0000" } else { "000000" },
-            );
+            let mut title_run = Run::plain(title)
+                .with_font_size(NOTICE_FONT_SIZE)
+                .with_text_style(
+                    "Arial Black",
+                    if row.emphasis { "FF0000" } else { "000000" },
+                );
             title_run.bold = row.emphasis;
             runs.push(title_run);
         }
