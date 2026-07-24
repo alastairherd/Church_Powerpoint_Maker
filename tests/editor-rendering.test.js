@@ -383,6 +383,30 @@ describe('editor render boundaries', () => {
     expect(reading.dataset.type).toBe('reading');
   });
 
+  it('reorders notice rows by drag and drop and persists the new order', async () => {
+    const service = makeService({ components: [{ id: 'notices-1', type: 'notices', heading: 'Notices', rows: [
+      { when: 'Today', title: 'Lunch', details: '', emphasis: false },
+      { when: 'Wednesday', title: 'Bible study', details: '', emphasis: false },
+      { when: 'Saturday', title: 'Walk', details: '', emphasis: false },
+    ] }] });
+    const app = createEditorApp({ document, request: async () => jsonResponse(service) });
+    await app.loadService(service);
+    document.querySelector('[data-id="notices-1"] .component-main').click();
+
+    const list = document.querySelector('.notice-editor');
+    expect(list.querySelectorAll('.drag-handle')).toHaveLength(3);
+    const [first, second] = list.children;
+    first.dispatchEvent(new Event('dragstart'));
+    second.dispatchEvent(new Event('dragover', { cancelable: true }));
+    list.dispatchEvent(new Event('drop'));
+
+    const rows = app.controller().getService().components[0].rows;
+    expect(rows.map(row => row.title)).toEqual(['Bible study', 'Lunch', 'Walk']);
+    const rerendered = document.querySelector('.notice-editor');
+    expect([...rerendered.querySelectorAll('input[placeholder="Title"]')].map(input => input.value))
+      .toEqual(['Bible study', 'Lunch', 'Walk']);
+  });
+
   it('marks the Teaching source select with component and field metadata', async () => {
     const service = makeService({ components: [{ id: 'teaching-1', type: 'teaching', heading: 'Teaching', source: 'heidelberg1891', selection: 'Q1', text: 'Text' }] });
     const app = createEditorApp({ document, request: async () => jsonResponse(service) });

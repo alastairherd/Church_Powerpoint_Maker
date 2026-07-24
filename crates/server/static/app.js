@@ -313,7 +313,12 @@ export function createEditorApp({
     const list = doc.createElement('div'); list.className = 'notice-editor';
     (component.rows || []).forEach((row, index) => {
       const wrapper = doc.createElement('div'); wrapper.className = 'notice-row';
+      wrapper.dataset.index = index;
+      const handle = button('⠿', 'drag-handle', `Move notice ${index + 1}`);
+      handle.tabIndex = -1;
+      handle.addEventListener('pointerdown', () => { wrapper.draggable = true; });
       wrapper.append(
+        handle,
         bareInput(component.id, `rows.${index}.when`, row.when, 'When', 'field', (current, value) => { current.rows[index].when = value; }),
         bareInput(component.id, `rows.${index}.title`, row.title, 'Title', 'field', (current, value) => { current.rows[index].title = value; }),
         bareInput(component.id, `rows.${index}.details`, row.details, 'Details', 'field', (current, value) => { current.rows[index].details = value; })
@@ -321,7 +326,24 @@ export function createEditorApp({
       const remove = button('×', 'icon-button', `Remove notice ${index + 1}`);
       remove.addEventListener('click', () => controller.updateComponent(component.id, current => { current.rows.splice(index, 1); }, 'structural'));
       wrapper.append(remove); list.append(wrapper);
+
+      wrapper.addEventListener('dragstart', () => wrapper.classList.add('dragging'));
+      wrapper.addEventListener('dragend', () => { wrapper.classList.remove('dragging'); wrapper.draggable = false; });
+      wrapper.addEventListener('dragover', event => {
+        event.preventDefault();
+        const dragging = list.querySelector('.dragging');
+        if (dragging && dragging !== wrapper) {
+          const box = wrapper.getBoundingClientRect();
+          list.insertBefore(dragging, event.clientY < box.top + box.height / 2 ? wrapper : wrapper.nextSibling);
+        }
+      });
     });
+    list.addEventListener('drop', () => {
+      const order = [...list.children].map(child => Number(child.dataset.index));
+      controller.updateComponent(component.id, current => {
+        current.rows = order.map(index => current.rows[index]);
+      }, 'structural');
+    }, { once: true });
     fields.append(list);
     const add = button('Add notice', 'button button-secondary');
     add.addEventListener('click', () => controller.updateComponent(component.id, current => { current.rows.push({ when: '', title: '', details: '', emphasis: false }); }, 'structural'));
