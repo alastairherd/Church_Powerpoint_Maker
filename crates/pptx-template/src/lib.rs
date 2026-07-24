@@ -510,6 +510,11 @@ impl Presentation {
         source_part: &str,
         mapping: &BTreeMap<String, String>,
     ) -> Result<Option<String>> {
+        // PowerPoint requires each slide master to own its theme part; reusing
+        // an existing identical theme would make two masters share one.
+        if source_part.starts_with("ppt/theme/") {
+            return Ok(None);
+        }
         let Some(bytes) = source.files.get(source_part) else {
             return Ok(None);
         };
@@ -999,6 +1004,24 @@ impl Presentation {
                     return Err(Error::InvalidPackage(format!(
                         "{} reaches unregistered slide master {master}",
                         slide.part
+                    )));
+                }
+            }
+        }
+        let mut theme_owners: BTreeMap<String, String> = BTreeMap::new();
+        for master in &entry_targets {
+            let relationships = self.part_string(&relationships_part(master))?;
+            for relationship in relationship_tags(&relationships) {
+                if !attr(&relationship, "Type").is_some_and(|value| value.ends_with("/theme")) {
+                    continue;
+                }
+                let target = attr(&relationship, "Target").ok_or_else(|| {
+                    Error::InvalidPackage(format!("{master} theme relationship has no target"))
+                })?;
+                let theme = resolve_part_target(master, &target)?;
+                if let Some(other) = theme_owners.insert(theme.clone(), master.clone()) {
+                    return Err(Error::InvalidPackage(format!(
+                        "slide masters {other} and {master} share theme part {theme}"
                     )));
                 }
             }

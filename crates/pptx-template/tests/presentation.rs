@@ -404,6 +404,89 @@ fn normalization_preserves_noncolliding_incoming_layout_ids() {
     );
 }
 
+#[test]
+fn imported_master_receives_its_own_theme_part() {
+    let source = source_with_distinct_master(DISTINCT_MASTER_ID);
+    let mut destination = Presentation::open_bytes(TEMPLATE).expect("open destination");
+    destination
+        .import_slides(&source)
+        .expect("import source with distinct master");
+    destination
+        .import_slides(&source)
+        .expect("import source again");
+    let generated = destination.save_bytes().expect("save generated package");
+    let mut archive = ZipArchive::new(Cursor::new(generated)).expect("open generated package");
+
+    let theme_relationship =
+        Regex::new(r#"<Relationship\b[^>]*Type="[^"]*/theme"[^>]*/>"#).unwrap();
+    let mut theme_targets = Vec::new();
+    for master in ["slideMaster1", "slideMaster2"] {
+        let mut rels = String::new();
+        archive
+            .by_name(&format!("ppt/slideMasters/_rels/{master}.xml.rels"))
+            .expect("master relationships exist")
+            .read_to_string(&mut rels)
+            .expect("master relationships are UTF-8");
+        let theme = theme_relationship
+            .find(&rels)
+            .expect("master references a theme");
+        theme_targets.push(
+            xml_attr(theme.as_str(), "Target")
+                .expect("theme relationship has target")
+                .trim_start_matches("../")
+                .to_string(),
+        );
+    }
+    assert_ne!(
+        theme_targets[0], theme_targets[1],
+        "each registered master must own a distinct theme part"
+    );
+
+    let imported_theme = format!("ppt/{}", theme_targets[1]);
+    archive
+        .by_name(&imported_theme)
+        .expect("imported theme part exists");
+    let mut content_types = String::new();
+    archive
+        .by_name("[Content_Types].xml")
+        .expect("content types exist")
+        .read_to_string(&mut content_types)
+        .expect("content types are UTF-8");
+    assert!(
+        content_types.contains(&format!("PartName=\"/{imported_theme}\"")),
+        "imported theme part must have a content-type override"
+    );
+}
+
+#[test]
+fn validation_rejects_registered_masters_sharing_a_theme_part() {
+    let source = source_with_distinct_master(DISTINCT_MASTER_ID);
+    let mut destination = Presentation::open_bytes(TEMPLATE).expect("open destination");
+    destination
+        .import_slides(&source)
+        .expect("import source with distinct master");
+    let generated = destination.save_bytes().expect("save generated package");
+    let r16_like = rewrite_zip_part(
+        generated,
+        "ppt/slideMasters/_rels/slideMaster2.xml.rels",
+        |xml| {
+            Regex::new(r#"(Type="[^"]*/theme"[^>]*Target=")[^"]*(")"#)
+                .expect("valid theme relationship regex")
+                .replace(&xml, "${1}../theme/theme1.xml${2}")
+                .into_owned()
+        },
+    );
+
+    let presentation = Presentation::open_bytes(&r16_like).expect("open r16-like package");
+    let error = presentation
+        .validate()
+        .expect_err("masters sharing one theme part must fail validation");
+    assert!(
+        error.to_string().contains("share theme part"),
+        "unexpected validation error: {error}"
+    );
+}
+
 fn source_without_distinct_master_registration() -> Vec<u8> {
     let source = source_with_distinct_master(DISTINCT_MASTER_ID);
     let mut input = ZipArchive::new(Cursor::new(source)).expect("open source package");
