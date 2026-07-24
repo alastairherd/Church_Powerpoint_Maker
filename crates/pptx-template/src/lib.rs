@@ -1478,6 +1478,25 @@ impl<'a> SlideMut<'a> {
             shape_name: name.to_string(),
         })
     }
+
+    pub fn hide_master_graphics(self) -> Result<()> {
+        let part = self.presentation.slides[self.index].part.clone();
+        let mut xml = self.presentation.part_string(&part)?;
+        let flag_re =
+            Regex::new(r#"showMasterSp="[^"]*""#).expect("valid master graphics flag regex");
+        if let Some(existing) = flag_re.find(&xml) {
+            let range = existing.range();
+            xml.replace_range(range, r#"showMasterSp="0""#);
+        } else if let Some(position) = xml.find("<p:sld ") {
+            xml.insert_str(position + "<p:sld ".len(), r#"showMasterSp="0" "#);
+        } else {
+            return Err(Error::InvalidPackage(format!(
+                "{part} has no p:sld root element"
+            )));
+        }
+        self.presentation.files.insert(part, xml.into_bytes());
+        Ok(())
+    }
 }
 
 pub struct ShapeMut<'a> {
@@ -1487,6 +1506,26 @@ pub struct ShapeMut<'a> {
 }
 
 impl ShapeMut<'_> {
+    pub fn position(&self) -> Result<(u64, u64, u64, u64)> {
+        let part = &self.presentation.slides[self.slide_index].part;
+        let xml = self.presentation.part_string(part)?;
+        let (_, _, block) = find_shape_block(&xml, &self.shape_name)?;
+        let off_re = Regex::new(r#"<a:off x="(\d+)" y="(\d+)"/>"#).expect("valid offset regex");
+        let ext_re = Regex::new(r#"<a:ext cx="(\d+)" cy="(\d+)"/>"#).expect("valid extent regex");
+        let off = off_re.captures(&block).ok_or_else(|| {
+            Error::InvalidPackage(format!("shape {} has no offset", self.shape_name))
+        })?;
+        let ext = ext_re.captures(&block).ok_or_else(|| {
+            Error::InvalidPackage(format!("shape {} has no extent", self.shape_name))
+        })?;
+        Ok((
+            off[1].parse().unwrap_or(0),
+            off[2].parse().unwrap_or(0),
+            ext[1].parse().unwrap_or(0),
+            ext[2].parse().unwrap_or(0),
+        ))
+    }
+
     pub fn set_text(self, text: &str) -> Result<()> {
         self.set_rich_text(&[Run::plain(text)])
     }

@@ -19,6 +19,31 @@ fn round_trip_preserves_slide_relationship_integrity() {
 }
 
 #[test]
+fn shape_position_reads_geometry_and_master_graphics_can_be_hidden() {
+    let mut pres = Presentation::open_bytes(TEMPLATE).expect("open template");
+    let position = pres
+        .slide_mut(16)
+        .unwrap()
+        .shape("TextShape 2")
+        .unwrap()
+        .position()
+        .unwrap();
+    assert_eq!(position, (397_041, 1_267_778, 9_683_583, 4_506_298));
+
+    assert!(!pres.slide_xml(16).unwrap().contains("showMasterSp"));
+    pres.slide_mut(16).unwrap().hide_master_graphics().unwrap();
+    let xml = pres.slide_xml(16).unwrap();
+    assert!(xml.contains("showMasterSp=\"0\""));
+    pres.validate().expect("package still validates");
+    // Hiding twice keeps a single, still-disabled flag.
+    pres.slide_mut(16).unwrap().hide_master_graphics().unwrap();
+    assert_eq!(
+        pres.slide_xml(16).unwrap().matches("showMasterSp").count(),
+        1
+    );
+}
+
+#[test]
 fn canonical_template_has_exact_twpc_dimensions() {
     let pres = Presentation::open_bytes(TEMPLATE).expect("template opens");
     assert_eq!(pres.slide_size().unwrap(), (10_080_625, 7_559_675));

@@ -522,6 +522,63 @@ async fn blank_teaching_renders_a_placeholder_but_invalid_automatic_loading_stil
     assert!(text.contains("This Sabbath is then kept holy unto the Lord"));
 }
 
+#[tokio::test]
+async fn blank_psalm_slide_breaks_are_skipped() {
+    let mut service = ServiceRecord::new(
+        "service-blank-psalm",
+        "Blank psalm break",
+        NaiveDate::from_ymd_opt(2026, 7, 26).unwrap(),
+        ServicePreset::Am,
+        "Alastair",
+    );
+    service.components = vec![ServiceComponent::Psalm {
+        id: "psalm".into(),
+        heading: "Psalm".into(),
+        reference: "Psalm 23:1–6".into(),
+        show_verse_numbers: true,
+        tune: None,
+        slide_breaks: vec!["The LORD's my shepherd".into(), String::new(), "  ".into()],
+    }];
+
+    let bytes = build_deck(&service, &MockSources, "522221")
+        .await
+        .expect("psalm with blank breaks builds");
+    let pres = Presentation::open_bytes(&bytes).expect("generated deck opens");
+    assert_eq!(pres.slide_count(), 1);
+    let text = pres.slide_text(0).unwrap();
+    assert!(text.contains("The LORD's my shepherd"));
+    assert!(text.contains("Sing Psalms"));
+}
+
+#[tokio::test]
+async fn crowded_slides_hide_the_master_logo() {
+    let mut service = ServiceRecord::new(
+        "service-crowded",
+        "Crowded slide",
+        NaiveDate::from_ymd_opt(2026, 7, 26).unwrap(),
+        ServicePreset::Am,
+        "Alastair",
+    );
+    let long_verse = (1..=14)
+        .map(|line| format!("Line {line} of a very long lyric verse"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    service.components = vec![ServiceComponent::Song {
+        id: "song".into(),
+        title: "Crowded song".into(),
+        song: None,
+        lyric_slides: vec![long_verse, "A short verse\nof two lines".into()],
+        credits: String::new(),
+    }];
+
+    let bytes = build_deck(&service, &MockSources, "522221")
+        .await
+        .expect("crowded song builds");
+    let pres = Presentation::open_bytes(&bytes).expect("generated deck opens");
+    assert!(pres.slide_xml(0).unwrap().contains("showMasterSp=\"0\""));
+    assert!(!pres.slide_xml(1).unwrap().contains("showMasterSp=\"0\""));
+}
+
 #[test]
 fn embedded_sources_resolve_catechism_psalm_and_fixed_component() {
     let fixed = FixedComponent::find("confession").expect("confession exists");
