@@ -354,6 +354,19 @@ describe('editor render boundaries', () => {
     expect(confirmImpl).toHaveBeenCalledTimes(5);
   });
 
+  it('scrolls the editor panel into view when a component is selected', async () => {
+    const service = makeService();
+    const app = createEditorApp({ document, request: async () => jsonResponse(service) });
+    await app.loadService(service);
+    const editor = document.getElementById('editor-panel');
+    editor.scrollIntoView = vi.fn();
+
+    document.querySelector('[data-id="psalm-1"] .component-main').click();
+
+    expect(editor.scrollTop).toBe(0);
+    expect(editor.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+  });
+
   it('marks the Teaching source select with component and field metadata', async () => {
     const service = makeService({ components: [{ id: 'teaching-1', type: 'teaching', heading: 'Teaching', source: 'heidelberg1891', selection: 'Q1', text: 'Text' }] });
     const app = createEditorApp({ document, request: async () => jsonResponse(service) });

@@ -217,6 +217,14 @@ p { text-wrap: pretty; }
 .editor-panel { background: var(--canvas); }
 .review-panel { border-left: 1px solid var(--line); background: var(--surface); }
 
+.editor-panel, .review-panel {
+  position: sticky;
+  top: var(--topbar);
+  max-height: calc(100vh - var(--topbar));
+  overflow-y: auto;
+  align-self: start;
+}
+
 .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
 .panel-heading.compact { align-items: center; margin-bottom: 10px; }
 .section-label { margin: 0 0 3px; color: var(--brand); font-size: 11px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; }

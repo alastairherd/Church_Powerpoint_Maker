@@ -208,6 +208,11 @@ export function createEditorApp({
     controller.selectComponent(id);
     renderOrder();
     renderEditor();
+    const panel = ui['editor-panel'];
+    if (panel) {
+      panel.scrollTop = 0;
+      panel.scrollIntoView?.({ block: 'nearest' });
+    }
   }
 
   function moveComponent(index, delta) {
