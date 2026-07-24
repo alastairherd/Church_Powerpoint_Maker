@@ -52,6 +52,15 @@ pub fn british_spellings(text: &str) -> String {
     out.trim().to_string()
 }
 
+pub fn normalise_scripture_lines(text: &str) -> String {
+    static VERSE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^\d{1,3}\s+").expect("valid leading verse number regex"));
+    text.lines()
+        .map(|line| VERSE.replace(line.trim(), "").to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn scripture_runs(text: &str) -> Vec<Run> {
     let marker = Regex::new(r"\[\d+\]\s*").expect("valid scripture marker regex");
     let mut runs = Vec::new();

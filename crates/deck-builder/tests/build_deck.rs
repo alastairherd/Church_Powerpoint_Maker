@@ -355,7 +355,7 @@ async fn generated_content_keeps_template_hierarchy_and_safe_sizing() {
             id: "call".into(),
             heading: "Call to Worship".into(),
             reference: "Psalm 96:2".into(),
-            text: "[1] Sing to the LORD; [2] bless his name.".into(),
+            text: "[1] Sing to the LORD;\n    [2] bless his name.\n2 Tell of his salvation.".into(),
             external_source_failed: false,
         },
         ServiceComponent::LiturgyBlock {
@@ -412,7 +412,13 @@ async fn generated_content_keeps_template_hierarchy_and_safe_sizing() {
         .unwrap();
     assert!(!call.contains("[1]") && !call.contains("[2]"));
     assert!(!call.contains("baseline=\"30000\""));
-    assert!(call.contains("Psalm 96:2"));
+    assert!(call.contains("<a:t>bless his name.</a:t>"));
+    assert!(call.contains("<a:t>Tell of his salvation.</a:t>"));
+    let reference_run = call
+        .split("<a:r>")
+        .find(|run| run.contains("<a:t>Psalm 96:2</a:t>"))
+        .expect("reference run present");
+    assert!(reference_run.contains("i=\"1\""));
 
     let liturgy = xml.iter().find(|slide| slide.contains("All.")).unwrap();
     assert!(liturgy.contains("typeface=\"Liberation Serif\""));

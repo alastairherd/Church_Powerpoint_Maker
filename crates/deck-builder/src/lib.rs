@@ -145,10 +145,13 @@ pub async fn build_deck(
             } => {
                 let slide = clone_seed(&mut pres, SEED_CALL_TO_WORSHIP, "call to worship")?;
                 set_shape_text(&mut pres, slide, "Title 1", heading)?;
-                let mut runs = textproc::scripture_runs(text.trim());
+                let body = textproc::normalise_scripture_lines(text.trim());
+                let mut runs = textproc::scripture_runs(&body);
                 if !reference.trim().is_empty() {
-                    let separator = if text.trim().is_empty() { "" } else { "\n\n" };
-                    runs.push(Run::plain(format!("{separator}{}", reference.trim())));
+                    let separator = if body.is_empty() { "" } else { "\n\n" };
+                    let mut reference_run = Run::plain(format!("{separator}{}", reference.trim()));
+                    reference_run.italic = true;
+                    runs.push(reference_run);
                 }
                 set_shape_runs(&mut pres, slide, "Text Placeholder 2", &runs)?;
             }
