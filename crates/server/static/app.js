@@ -481,28 +481,31 @@ export function createEditorApp({
       renderEditor();
     });
     source.append(select); fields.append(source);
-    fields.append(textField('Question or section', component.id, 'selection', component.selection, 'e.g. 1, Q1, or Q. 1', 'summary'));
-    if (component.source === 'westminster_shorter_catechism') {
-      const inline = doc.createElement('div'); inline.className = 'inline-action';
-      const loadButton = button('Load WSC question', 'button button-secondary');
-      loadButton.dataset.loaderKind = 'teaching';
-      loadButton.dataset.componentId = component.id;
-      const error = loaderErrorNode('teaching', component.id);
-      loadButton.setAttribute('aria-describedby', error.id);
-      loadButton.addEventListener('click', () => {
-        const current = controller.findComponent(component.id);
-        if (!current?.selection.trim()) {
-          showToast('Enter a catechism question, for example Q. 1.');
-          return;
-        }
-        void controller.loadTeaching(component.id, current.source, current.selection);
-      });
-      inline.append(loadButton, error); fields.append(inline);
-    }
+    const teachingCopy = {
+      westminster_shorter_catechism: { load: 'Load WSC question', retry: 'Retry WSC question', placeholder: 'e.g. 1, Q1, or Q. 1', prompt: 'Enter a catechism question, for example Q. 1.', note: 'Load retrieves the embedded WSC question and answer into editable text.' },
+      heidelberg1891: { load: 'Load Heidelberg question', retry: 'Retry Heidelberg question', placeholder: 'e.g. 1, Q1, or Q. 1', prompt: 'Enter a catechism question, for example Q. 1.', note: 'Load retrieves the embedded Heidelberg Catechism question and answer into editable text.' },
+      westminster_confession_original_british: { load: 'Load WCF section', retry: 'Retry WCF section', placeholder: 'e.g. 21 or 21.8', prompt: 'Enter a confession chapter or section, for example 21.8.', note: 'Load retrieves the embedded Westminster Confession chapter or section into editable text.' },
+    }[component.source] || { load: 'Load text', retry: 'Retry', placeholder: '', prompt: 'Enter a selection first.', note: '' };
+    fields.append(textField('Question or section', component.id, 'selection', component.selection, teachingCopy.placeholder, 'summary'));
+    const inline = doc.createElement('div'); inline.className = 'inline-action';
+    const loadButton = button(teachingCopy.load, 'button button-secondary');
+    loadButton.dataset.loaderKind = 'teaching';
+    loadButton.dataset.componentId = component.id;
+    loadButton.dataset.idleLabel = teachingCopy.load;
+    loadButton.dataset.retryLabel = teachingCopy.retry;
+    const error = loaderErrorNode('teaching', component.id);
+    loadButton.setAttribute('aria-describedby', error.id);
+    loadButton.addEventListener('click', () => {
+      const current = controller.findComponent(component.id);
+      if (!current?.selection.trim()) {
+        showToast(teachingCopy.prompt);
+        return;
+      }
+      void controller.loadTeaching(component.id, current.source, current.selection);
+    });
+    inline.append(loadButton, error); fields.append(inline);
     const note = doc.createElement('p'); note.className = 'field-note';
-    note.textContent = component.source === 'westminster_shorter_catechism'
-      ? 'Load retrieves the embedded WSC question and answer into editable text.'
-      : 'Automatic loading is unavailable for this source; enter and save the teaching text manually.';
+    note.textContent = teachingCopy.note;
     fields.append(note);
     fields.append(textArea('Editable text', component.id, 'text', component.text, 'The wording saved here is pinned when the service is completed.'));
   }
@@ -729,8 +732,8 @@ export function createEditorApp({
     buttonElement.textContent = loader.pending
       ? (kind === 'psalm' || kind === 'teaching' ? 'Loading…' : 'Fetching…')
       : (loader.error
-        ? (kind === 'psalm' ? 'Retry Psalm text' : kind === 'teaching' ? 'Retry WSC question' : 'Retry ESV text')
-        : (kind === 'psalm' ? 'Load Psalm text' : kind === 'teaching' ? 'Load WSC question' : 'Fetch ESV text'));
+        ? (buttonElement.dataset.retryLabel || (kind === 'psalm' ? 'Retry Psalm text' : 'Retry ESV text'))
+        : (buttonElement.dataset.idleLabel || (kind === 'psalm' ? 'Load Psalm text' : 'Fetch ESV text')));
     error.hidden = !loader.error;
     error.textContent = loader.error || '';
   }

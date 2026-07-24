@@ -482,31 +482,77 @@ async fn blank_teaching_renders_a_placeholder_but_invalid_automatic_loading_stil
         .to_string()
         .contains("enter a catechism question such as 1, Q1, or Q. 1"));
 
-    let mut unsupported = blank;
+    let mut heidelberg = blank.clone();
     if let ServiceComponent::Teaching {
         source, selection, ..
-    } = &mut unsupported.components[0]
+    } = &mut heidelberg.components[0]
     {
         *source = deck_builder::TeachingSource::Heidelberg1891;
         *selection = "Q1".into();
     }
-    let error = build_deck(&unsupported, &MockSources, "522221")
+    let bytes = build_deck(&heidelberg, &MockSources, "522221")
         .await
-        .expect_err("unsupported automatic sources still fail");
-    assert!(error
-        .to_string()
-        .contains("enter the teaching text manually"));
+        .expect("heidelberg questions load automatically");
+    let pres = Presentation::open_bytes(&bytes).expect("generated deck opens");
+    assert!(pres
+        .slide_text(0)
+        .unwrap()
+        .contains("What is your only comfort in life and death?"));
+
+    let mut confession = blank;
+    if let ServiceComponent::Teaching {
+        source, selection, ..
+    } = &mut confession.components[0]
+    {
+        *source = deck_builder::TeachingSource::WestminsterConfessionOriginalBritish;
+        *selection = "21.8".into();
+    }
+    let bytes = build_deck(&confession, &MockSources, "522221")
+        .await
+        .expect("confession sections load automatically");
+    let pres = Presentation::open_bytes(&bytes).expect("generated deck opens");
+    let text = pres.slide_text(0).unwrap();
+    assert!(text.contains("Chapter 21"));
+    assert!(text.contains("This Sabbath is then kept holy unto the Lord"));
 }
 
 #[test]
 fn embedded_sources_resolve_catechism_psalm_and_fixed_component() {
     let fixed = FixedComponent::find("confession").expect("confession exists");
-    let catechism = deck_builder::Catechism::find(1).expect("wsc q1 exists");
+    let catechism = deck_builder::Teaching::find(
+        deck_builder::TeachingSource::WestminsterShorterCatechism,
+        "Q. 1",
+    )
+    .expect("wsc q1 exists");
+    let heidelberg =
+        deck_builder::Teaching::find(deck_builder::TeachingSource::Heidelberg1891, "1")
+            .expect("heidelberg q1 exists");
+    let confession = deck_builder::Teaching::find(
+        deck_builder::TeachingSource::WestminsterConfessionOriginalBritish,
+        "1.2",
+    )
+    .expect("wcf 1.2 exists");
+    let whole_chapter = deck_builder::Teaching::find(
+        deck_builder::TeachingSource::WestminsterConfessionOriginalBritish,
+        "Chapter 1",
+    )
+    .expect("wcf chapter 1 exists");
     let psalm = deck_builder::Psalm::find("Psalm 1:1-3 (a)").expect("psalm exists");
     let psalm_with_typographic_dash =
         deck_builder::Psalm::find("psalm 23:1–6").expect("friendly psalm reference works");
     assert_eq!(fixed.speaker, "All.");
     assert_eq!(catechism.question, "What is the chief end of man?");
+    assert_eq!(catechism.selection, "1");
+    assert_eq!(
+        heidelberg.question,
+        "What is your only comfort in life and death?"
+    );
+    assert_eq!(confession.selection, "1.2");
+    assert_eq!(confession.question, "Chapter 1: Of the Holy Scripture");
+    assert!(confession.answer.contains("Word of God written"));
+    assert_eq!(whole_chapter.selection, "1");
+    assert!(whole_chapter.answer.starts_with("1. "));
+    assert!(whole_chapter.answer.contains("\n\n10. "));
     assert_eq!(psalm.stanzas.len(), 3);
     assert_eq!(psalm_with_typographic_dash.meter, "11 11 11");
     assert_eq!(psalm_with_typographic_dash.stanzas.len(), 5);

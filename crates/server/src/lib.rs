@@ -12,8 +12,8 @@ use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use chrono::{Duration as ChronoDuration, NaiveDate, Utc};
 use deck_builder::{
-    build_deck, propose_psalm_groups, Catechism, FixedComponent, GeneratedDeckVersion,
-    GlobalSettingsVersion, Psalm, ServicePreset, ServiceRecord, ServiceStatus, Sources, StoredSong,
+    build_deck, propose_psalm_groups, FixedComponent, GeneratedDeckVersion, GlobalSettingsVersion,
+    Psalm, ServicePreset, ServiceRecord, ServiceStatus, Sources, StoredSong, Teaching,
     TeachingSource,
 };
 use hmac::{Hmac, Mac};
@@ -96,8 +96,8 @@ impl Sources for ServiceSources {
         self.upstream.psalm(reference)
     }
 
-    fn catechism(&self, question: u16) -> anyhow::Result<Catechism> {
-        self.upstream.catechism(question)
+    fn teaching(&self, source: TeachingSource, selection: &str) -> anyhow::Result<Teaching> {
+        self.upstream.teaching(source, selection)
     }
 
     fn fixed_component(&self, key: &str) -> anyhow::Result<FixedComponent> {
@@ -469,20 +469,13 @@ async fn fetch_teaching(
     State(state): State<AppState>,
     Query(query): Query<TeachingQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    if query.source != TeachingSource::WestminsterShorterCatechism {
-        return Err(AppError::bad_request(
-            "automatic loading is only available for the Westminster Shorter Catechism; enter this source manually",
-        ));
-    }
-    let number = deck_builder::parse_catechism_selection(&query.selection)
-        .map_err(|error| AppError::bad_request(error.to_string()))?;
     let item = state
         .sources
-        .catechism(number)
+        .teaching(query.source, &query.selection)
         .map_err(|error| AppError::bad_request(error.to_string()))?;
     Ok(Json(json!({
         "source": query.source,
-        "selection": number,
+        "selection": item.selection,
         "question": item.question,
         "answer": item.answer,
     })))

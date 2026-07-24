@@ -55,8 +55,8 @@ pub struct Psalm {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Catechism {
-    pub number: u16,
+pub struct Teaching {
+    pub selection: String,
     pub question: String,
     pub answer: String,
 }
@@ -80,8 +80,8 @@ pub trait Sources: Send + Sync {
         Psalm::find(reference)
     }
 
-    fn catechism(&self, question: u16) -> anyhow::Result<Catechism> {
-        Catechism::find(question)
+    fn teaching(&self, source: TeachingSource, selection: &str) -> anyhow::Result<Teaching> {
+        Teaching::find(source, selection)
     }
 
     fn fixed_component(&self, key: &str) -> anyhow::Result<FixedComponent> {
@@ -315,13 +315,8 @@ pub async fn build_deck(
                 let resolved = if text.trim().is_empty() {
                     if selection.trim().is_empty() {
                         "Choose a teaching question or enter teaching text".to_string()
-                    } else if *source != TeachingSource::WestminsterShorterCatechism {
-                        return Err(anyhow!(
-                            "automatic teaching loading is not available for this source; enter the teaching text manually"
-                        ));
                     } else {
-                        let number = parse_catechism_selection(selection)?;
-                        let item = sources.catechism(number)?;
+                        let item = sources.teaching(*source, selection)?;
                         format!("{}\n\n{}", item.question, item.answer)
                     }
                 } else {
@@ -618,18 +613,63 @@ impl Psalm {
     }
 }
 
-impl Catechism {
-    pub fn find(question: u16) -> anyhow::Result<Self> {
-        let item = WSC
+impl Teaching {
+    pub fn find(source: TeachingSource, selection: &str) -> anyhow::Result<Self> {
+        match source {
+            TeachingSource::WestminsterShorterCatechism => Self::catechism_entry(&WSC, selection),
+            TeachingSource::Heidelberg1891 => Self::catechism_entry(&HEIDELBERG, selection),
+            TeachingSource::WestminsterConfessionOriginalBritish => {
+                Self::confession_entry(selection)
+            }
+        }
+    }
+
+    fn catechism_entry(file: &CatechismFile, selection: &str) -> anyhow::Result<Self> {
+        let question = parse_catechism_selection(selection)?;
+        let item = file
             .data
             .iter()
             .find(|item| item.number == question)
             .ok_or_else(|| anyhow!("catechism question not found: {question}"))?;
         Ok(Self {
-            number: item.number,
+            selection: question.to_string(),
             question: item.question.clone(),
             answer: item.answer.clone(),
         })
+    }
+
+    fn confession_entry(selection: &str) -> anyhow::Result<Self> {
+        let (chapter, section) = parse_confession_selection(selection)?;
+        let entry = WCF
+            .data
+            .iter()
+            .find(|item| item.chapter == chapter)
+            .ok_or_else(|| anyhow!("confession chapter not found: {chapter}"))?;
+        let question = format!("Chapter {chapter}: {}", entry.title);
+        match section {
+            Some(wanted) => {
+                let found = entry
+                    .sections
+                    .iter()
+                    .find(|item| item.section == wanted)
+                    .ok_or_else(|| anyhow!("confession section not found: {chapter}.{wanted}"))?;
+                Ok(Self {
+                    selection: format!("{chapter}.{wanted}"),
+                    question,
+                    answer: found.content.clone(),
+                })
+            }
+            None => Ok(Self {
+                selection: chapter.to_string(),
+                question,
+                answer: entry
+                    .sections
+                    .iter()
+                    .map(|item| format!("{}. {}", item.section, item.content))
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            }),
+        }
     }
 }
 
@@ -915,6 +955,29 @@ pub fn parse_catechism_selection(selection: &str) -> anyhow::Result<u16> {
         .ok_or_else(|| anyhow!("enter a catechism question such as 1, Q1, or Q. 1"))
 }
 
+pub fn parse_confession_selection(selection: &str) -> anyhow::Result<(u16, Option<u16>)> {
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)^\s*(?:ch(?:apter)?\s*\.?\s*)?(\d{1,2})(?:\s*[.:]\s*(\d{1,2}))?\s*$")
+            .expect("valid confession selection regex")
+    });
+    RE.captures(selection.trim())
+        .map(|captures| {
+            (
+                captures
+                    .get(1)
+                    .and_then(|number| number.as_str().parse::<u16>().ok()),
+                captures
+                    .get(2)
+                    .and_then(|number| number.as_str().parse::<u16>().ok()),
+            )
+        })
+        .and_then(|(chapter, section)| chapter.map(|chapter| (chapter, section)))
+        .filter(|(chapter, section)| {
+            *chapter > 0 && section.map(|number| number > 0) != Some(false)
+        })
+        .ok_or_else(|| anyhow!("enter a confession chapter such as 21, 21.8, or Chapter 21"))
+}
+
 fn liturgy_runs(speaker: &str, text: &str, include_speaker: bool) -> Vec<Run> {
     let (existing_cue, body) = leading_liturgy_cue(text, speaker);
     let cue = existing_cue.or_else(|| {
@@ -1015,19 +1078,43 @@ struct PsalmContent {
 }
 
 #[derive(Debug, Deserialize)]
-struct WscFile {
+struct CatechismFile {
     #[serde(rename = "Data")]
-    data: Vec<WscItem>,
+    data: Vec<CatechismItem>,
 }
 
 #[derive(Debug, Deserialize)]
-struct WscItem {
+struct CatechismItem {
     #[serde(rename = "Number")]
     number: u16,
     #[serde(rename = "Question")]
     question: String,
     #[serde(rename = "Answer")]
     answer: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfessionFile {
+    #[serde(rename = "Data")]
+    data: Vec<ConfessionChapter>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfessionChapter {
+    #[serde(rename = "Chapter")]
+    chapter: u16,
+    #[serde(rename = "Title")]
+    title: String,
+    #[serde(rename = "Sections")]
+    sections: Vec<ConfessionSection>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfessionSection {
+    #[serde(rename = "Section")]
+    section: u16,
+    #[serde(rename = "Content")]
+    content: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1041,8 +1128,15 @@ struct ComponentEntry {
 static PSALMS: Lazy<Vec<PsalmEntry>> = Lazy::new(|| {
     serde_json::from_str(include_str!("../assets/psalms.json")).expect("valid embedded psalms.json")
 });
-static WSC: Lazy<WscFile> = Lazy::new(|| {
+static WSC: Lazy<CatechismFile> = Lazy::new(|| {
     serde_json::from_str(include_str!("../assets/wsc.json")).expect("valid embedded wsc.json")
+});
+static HEIDELBERG: Lazy<CatechismFile> = Lazy::new(|| {
+    serde_json::from_str(include_str!("../assets/heidelberg.json"))
+        .expect("valid embedded heidelberg.json")
+});
+static WCF: Lazy<ConfessionFile> = Lazy::new(|| {
+    serde_json::from_str(include_str!("../assets/wcf.json")).expect("valid embedded wcf.json")
 });
 static COMPONENTS: Lazy<Vec<ComponentEntry>> = Lazy::new(|| {
     serde_json::from_str(include_str!("../assets/components.json"))

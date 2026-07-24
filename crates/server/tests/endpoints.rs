@@ -242,41 +242,71 @@ async fn scripture_and_psalm_shapes_match_editor_loaders() {
 }
 
 #[tokio::test]
-async fn teaching_loader_accepts_friendly_wsc_selection_and_rejects_unsupported_automatic_sources()
-{
+async fn teaching_loader_accepts_friendly_selections_for_every_source() {
     let (app, cookie, _) = authenticated().await;
-    let teaching = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/teaching?source=westminster_shorter_catechism&selection=Q.%201")
-                .header("cookie", &cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(teaching.status(), StatusCode::OK);
-    let body = to_bytes(teaching.into_body(), usize::MAX).await.unwrap();
-    let teaching: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(teaching["selection"], 1);
-    assert_eq!(teaching["question"], "What is the chief end of man?");
-    assert!(teaching["answer"].as_str().unwrap().contains("glorify God"));
+    let cases = [
+        (
+            "/api/teaching?source=westminster_shorter_catechism&selection=Q.%201",
+            "1",
+            "What is the chief end of man?",
+            "glorify God",
+        ),
+        (
+            "/api/teaching?source=heidelberg1891&selection=Q1",
+            "1",
+            "What is your only comfort in life and death?",
+            "faithful Saviour",
+        ),
+        (
+            "/api/teaching?source=westminster_confession_original_british&selection=1.2",
+            "1.2",
+            "Chapter 1: Of the Holy Scripture",
+            "Word of God written",
+        ),
+    ];
+    for (uri, selection, question, answer_fragment) in cases {
+        let teaching = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(teaching.status(), StatusCode::OK, "{uri}");
+        let body = to_bytes(teaching.into_body(), usize::MAX).await.unwrap();
+        let teaching: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(teaching["selection"], selection, "{uri}");
+        assert_eq!(teaching["question"], question, "{uri}");
+        assert!(
+            teaching["answer"]
+                .as_str()
+                .unwrap()
+                .contains(answer_fragment),
+            "{uri}"
+        );
+    }
 
-    let unsupported = app
+    let invalid = app
         .oneshot(
             Request::builder()
-                .uri("/api/teaching?source=heidelberg1891&selection=Q1")
+                .uri("/api/teaching?source=westminster_confession_original_british&selection=nonsense")
                 .header("cookie", cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(unsupported.status(), StatusCode::BAD_REQUEST);
-    let body = to_bytes(unsupported.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(invalid.into_body(), usize::MAX).await.unwrap();
     let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(error["error"].as_str().unwrap().contains("manually"));
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("confession chapter"));
 }
 
 #[tokio::test]

@@ -407,6 +407,35 @@ describe('editor render boundaries', () => {
       .toEqual(['Bible study', 'Lunch', 'Walk']);
   });
 
+  it('renders an automatic load action for every teaching source', async () => {
+    const service = makeService({ components: [
+      { id: 'teaching-1', type: 'teaching', heading: 'Teaching', source: 'heidelberg1891', selection: '1', text: '' },
+    ] });
+    let requested = null;
+    const app = createEditorApp({ document, request: async url => {
+      if (url.includes('/api/teaching')) {
+        requested = url;
+        return jsonResponse({ source: 'heidelberg1891', selection: '1', question: 'What is your only comfort?', answer: 'That I am not my own.' });
+      }
+      return jsonResponse(service);
+    } });
+    await app.loadService(service);
+    document.querySelector('[data-id="teaching-1"] .component-main').click();
+
+    const load = document.querySelector('[data-loader-kind="teaching"]');
+    expect(load.textContent).toBe('Load Heidelberg question');
+    load.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(requested).toContain('source=heidelberg1891');
+    expect(app.controller().getService().components[0].text).toBe('What is your only comfort?\n\nThat I am not my own.');
+
+    const source = document.querySelector('select[data-field="source"]');
+    source.value = 'westminster_confession_original_british';
+    source.dispatchEvent(new Event('change'));
+    expect(document.querySelector('[data-loader-kind="teaching"]').textContent).toBe('Load WCF section');
+    expect(document.querySelector('[data-field="selection"]').placeholder).toBe('e.g. 21 or 21.8');
+  });
+
   it('marks the Teaching source select with component and field metadata', async () => {
     const service = makeService({ components: [{ id: 'teaching-1', type: 'teaching', heading: 'Teaching', source: 'heidelberg1891', selection: 'Q1', text: 'Text' }] });
     const app = createEditorApp({ document, request: async () => jsonResponse(service) });
