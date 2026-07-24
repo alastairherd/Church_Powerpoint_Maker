@@ -34,6 +34,8 @@ export function createEditorApp({
   let controller;
   let toastTimer = null;
   let booted = false;
+  let generationPromise = null;
+  const generationLabels = new Map();
 
   async function request(url, options = {}) {
     if (injectedRequest) return injectedRequest(url, options);
@@ -621,27 +623,55 @@ export function createEditorApp({
     ui['review-dialog']?.showModal();
   }
 
-  async function generate() {
-    const service = controller.getService();
-    try {
-      await controller.saveNow();
-      setSaveState('Saving', 'Generating PowerPoint…');
-      const response = await request(`/api/services/${service.id}/generate`, { method: 'POST' });
-      const blob = await response.blob();
-      const disposition = response.headers.get('content-disposition') || '';
-      const filename = disposition.match(/filename=\"([^\"]+)\"/)?.[1] || `service-${service.date}.pptx`;
-      const link = doc.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = filename;
-      link.click();
-      timers.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-      service.status = 'completed';
-      setSaveState('Saved', 'PowerPoint generated'); showToast('PowerPoint generated and saved to service history.'); ui['review-dialog']?.close();
-    } catch (error) {
-      setSaveState('Failed', 'Failed');
-      setSaveHelp(`Generation failed: ${error.message}`);
-      showToast(error.message);
+  function setGenerationPending(pending) {
+    for (const element of [ui['generate-service'], ui['review-generate']].filter(Boolean)) {
+      if (pending) {
+        if (!generationLabels.has(element)) {
+          generationLabels.set(element, { text: element.textContent, disabled: element.disabled });
+        }
+        element.disabled = true;
+        element.textContent = 'Generating…';
+      } else {
+        const original = generationLabels.get(element);
+        if (original) {
+          element.disabled = original.disabled;
+          element.textContent = original.text;
+        }
+      }
     }
+    if (!pending) generationLabels.clear();
+  }
+
+  function generate() {
+    if (generationPromise) return generationPromise;
+    const service = controller.getService();
+    if (!service) return;
+    setGenerationPending(true);
+    generationPromise = (async () => {
+      try {
+        await controller.saveNow();
+        setSaveState('Saving', 'Generating PowerPoint…');
+        const response = await request(`/api/services/${service.id}/generate`, { method: 'POST' });
+        const blob = await response.blob();
+        const disposition = response.headers.get('content-disposition') || '';
+        const filename = disposition.match(/filename=\"([^\"]+)\"/)?.[1] || `service-${service.date}.pptx`;
+        const link = doc.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = filename;
+        link.click();
+        timers.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+        service.status = 'completed';
+        setSaveState('Saved', 'PowerPoint generated'); showToast('PowerPoint generated and saved to service history.'); ui['review-dialog']?.close();
+      } catch (error) {
+        setSaveState('Failed', 'Failed');
+        setSaveHelp(`Generation failed: ${error.message}`);
+        showToast(error.message);
+      } finally {
+        setGenerationPending(false);
+        generationPromise = null;
+      }
+    })();
+    return generationPromise;
   }
 
   function button(text, className, label) {

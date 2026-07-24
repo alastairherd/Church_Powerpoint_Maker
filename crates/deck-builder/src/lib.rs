@@ -25,6 +25,13 @@ const SEED_LITURGY: usize = 23;
 const SEED_SONG: usize = 39;
 const SEED_SONG_FINAL: usize = 46;
 const SEED_REFRESHMENTS: usize = 48;
+const NOTICES_BODY_X: u64 = 765_544;
+const NOTICES_BODY_Y: u64 = 1_100_000;
+const NOTICES_BODY_WIDTH: u64 = 8_893_463;
+// Keep the seed textbox's bottom edge unchanged while adding space below the title.
+const NOTICES_BODY_BOTTOM: u64 = 5_279_036;
+const NOTICE_FONT_SIZE: u32 = 2_800;
+const NOTICE_DETAIL_FONT_SIZE: u32 = 2_400;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scripture {
@@ -121,6 +128,12 @@ pub async fn build_deck(
                 for page in pages {
                     let slide = clone_seed(&mut pres, SEED_NOTICES, "notices")?;
                     set_shape_text(&mut pres, slide, "Title 1", heading)?;
+                    pres.slide_mut(slide)?.shape("TextBox 2")?.set_position(
+                        NOTICES_BODY_X,
+                        NOTICES_BODY_Y,
+                        NOTICES_BODY_WIDTH,
+                        NOTICES_BODY_BOTTOM - NOTICES_BODY_Y,
+                    )?;
                     set_shape_runs(&mut pres, slide, "TextBox 2", &notice_runs(&page))?;
                 }
             }
@@ -439,29 +452,29 @@ fn notice_runs(rows: &[NoticeRow]) -> Vec<Run> {
         if !when.is_empty() {
             runs.push(
                 Run::plain(when)
-                    .with_font_size(2800)
+                    .with_font_size(NOTICE_FONT_SIZE)
                     .with_text_style("Arial Black", "accent1"),
             );
         }
         if !lead_separator.is_empty() {
             runs.push(
                 Run::plain(" ")
-                    .with_font_size(2800)
+                    .with_font_size(NOTICE_FONT_SIZE)
                     .with_text_style("Arial Black", "accent1"),
             );
             runs.push(
                 Run::plain("–")
-                    .with_font_size(2800)
+                    .with_font_size(NOTICE_FONT_SIZE)
                     .with_text_style("Arial Black", "000000"),
             );
             runs.push(
                 Run::plain(" ")
-                    .with_font_size(2800)
+                    .with_font_size(NOTICE_FONT_SIZE)
                     .with_text_style("Arial Black", "accent1"),
             );
         }
         if !title.is_empty() {
-            let mut title_run = Run::plain(title).with_font_size(2800).with_text_style(
+            let mut title_run = Run::plain(title).with_font_size(NOTICE_FONT_SIZE).with_text_style(
                 "Arial Black",
                 if row.emphasis { "FF0000" } else { "000000" },
             );
@@ -470,11 +483,11 @@ fn notice_runs(rows: &[NoticeRow]) -> Vec<Run> {
         }
         if !details.is_empty() {
             runs.push(Run::plain("\n"));
-            runs.push(
-                Run::plain(details)
-                    .with_font_size(2800)
-                    .with_text_style("Arial Black", "000000"),
-            );
+            let mut detail_run = Run::plain(details)
+                .with_font_size(NOTICE_DETAIL_FONT_SIZE)
+                .with_text_style("Arial Black", "000000");
+            detail_run.italic = true;
+            runs.push(detail_run);
         }
         if index + 1 < rows.len() {
             runs.push(Run::plain("\n\n"));

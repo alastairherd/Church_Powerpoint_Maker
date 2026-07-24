@@ -397,7 +397,10 @@ async fn generated_content_keeps_template_hierarchy_and_safe_sizing() {
     assert!(!notices.contains("typeface=\"Arial\""));
     assert!(!notices.contains("sz=\"2200\""));
     assert!(notices.contains("sz=\"2800\""));
+    assert!(notices.contains("sz=\"2400\" i=\"1\""));
     assert!(notices.contains("b=\"1\""));
+    assert!(notices.contains("<a:off x=\"765544\" y=\"1100000\"/>"));
+    assert!(notices.contains("<a:ext cx=\"8893463\" cy=\"4179036\"/>"));
     assert!(notices.contains("<a:t>Today</a:t>") || notices.contains("<a:t>Today </a:t>"));
     assert!(notices.contains("<a:t>–</a:t>"));
     assert!(!notices.contains(" · "));

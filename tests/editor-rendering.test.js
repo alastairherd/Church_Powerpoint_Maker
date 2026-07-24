@@ -202,6 +202,74 @@ describe('editor render boundaries', () => {
     expect(document.getElementById('save-state').className).toBe('save-state error');
   });
 
+  it('disables both generation actions while saving and downloading, then restores them', async () => {
+    const service = makeService();
+    const generated = deferred();
+    let generationCalls = 0;
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:generated'), revokeObjectURL: vi.fn() });
+    const app = createEditorApp({
+      document,
+      request: async url => {
+        if (url === '/api/presets') return jsonResponse([]);
+        if (url === '/api/services') return jsonResponse([]);
+        if (url.includes('/generate')) {
+          generationCalls += 1;
+          return generated.promise;
+        }
+        return jsonResponse(service);
+      },
+    });
+    try {
+      await app.loadService(service);
+      app.boot();
+      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+      const primary = document.getElementById('generate-service');
+      const review = document.getElementById('review-generate');
+      primary.click();
+      expect(primary.disabled).toBe(true);
+      expect(review.disabled).toBe(true);
+      expect(primary.textContent).toBe('Generating…');
+      expect(review.textContent).toBe('Generating…');
+      primary.click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(generationCalls).toBe(1);
+
+      generated.resolve(new Response('pptx', { headers: { 'content-disposition': 'attachment; filename="service.pptx"' } }));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(primary.disabled).toBe(false);
+      expect(review.disabled).toBe(false);
+      expect(primary.textContent).toBe('Generate PowerPoint');
+      expect(review.textContent).toBe('Generate PowerPoint');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('restores generation actions after a generation error, including the review action', async () => {
+    const service = makeService();
+    const app = createEditorApp({
+      document,
+      request: async url => {
+        if (url === '/api/presets') return jsonResponse([]);
+        if (url === '/api/services') return jsonResponse([]);
+        if (url.includes('/generate')) throw new Error('download failed');
+        return jsonResponse(service);
+      },
+    });
+    await app.loadService(service);
+    app.boot();
+    const primary = document.getElementById('generate-service');
+    const review = document.getElementById('review-generate');
+    review.click();
+    expect(primary.textContent).toBe('Generating…');
+    expect(review.textContent).toBe('Generating…');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(primary.disabled).toBe(false);
+    expect(review.disabled).toBe(false);
+    expect(primary.textContent).toBe('Generate PowerPoint');
+    expect(review.textContent).toBe('Generate PowerPoint');
+  });
+
   it('guards dirty library navigation and beforeunload without hard-coded browser globals', async () => {
     const service = makeService();
     const location = { assign: vi.fn() };

@@ -67,8 +67,8 @@ export function installBuilderDom(document) {
       <button id="new-service"></button>
       <button id="create-service"></button>
       <button id="review-service"></button>
-      <button id="generate-service"></button>
-      <button id="review-generate"></button>
+      <button id="generate-service">Generate PowerPoint</button>
+      <button id="review-generate">Generate PowerPoint</button>
       <button id="add-component"></button>
       <button id="sign-out"></button>
       <button id="save-now"></button>
