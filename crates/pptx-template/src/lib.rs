@@ -1267,9 +1267,7 @@ impl Presentation {
                 .iter()
                 .any(|relationship| attr(relationship, "Id").as_deref() == Some(rid.as_str()))
             {
-                if self.next_rel_id < u32::MAX {
-                    self.next_rel_id += 1;
-                }
+                self.next_rel_id = self.next_rel_id.saturating_add(1);
                 return Ok(rid);
             }
             if self.next_rel_id == u32::MAX {
@@ -2013,6 +2011,22 @@ fn def_rpr_to_rpr(xml: String) -> String {
         .replace("</a:defRPr>", "</a:rPr>")
 }
 
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn xml_unescape(text: &str) -> String {
+    text.replace("&apos;", "'")
+        .replace("&quot;", "\"")
+        .replace("&gt;", ">")
+        .replace("&lt;", "<")
+        .replace("&amp;", "&")
+}
+
 #[cfg(test)]
 mod tests {
     use super::merge_run_style;
@@ -2062,20 +2076,4 @@ mod tests {
         assert!(styled.contains("<a:ln><a:noFill/></a:ln>"));
         assert_eq!(styled.matches(r#"typeface="Arial Black""#).count(), 3);
     }
-}
-
-fn xml_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
-fn xml_unescape(text: &str) -> String {
-    text.replace("&apos;", "'")
-        .replace("&quot;", "\"")
-        .replace("&gt;", ">")
-        .replace("&lt;", "<")
-        .replace("&amp;", "&")
 }
