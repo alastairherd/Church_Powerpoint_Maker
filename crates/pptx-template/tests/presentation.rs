@@ -212,6 +212,16 @@ fn imports_and_registers_distinct_slide_master_once() {
         .save_bytes()
         .expect("save imported presentation");
     let mut archive = ZipArchive::new(Cursor::new(&bytes)).expect("open saved package");
+    let layout_part_count = (0..archive.len())
+        .filter(|index| {
+            let name = archive
+                .by_index(*index)
+                .expect("package part")
+                .name()
+                .to_string();
+            name.starts_with("ppt/slideLayouts/slideLayout") && name.ends_with(".xml")
+        })
+        .count();
     let mut presentation = String::new();
     archive
         .by_name("ppt/presentation.xml")
@@ -237,15 +247,19 @@ fn imports_and_registers_distinct_slide_master_once() {
     let master_ids = master_entries
         .find_iter(&presentation)
         .filter_map(|entry| xml_attr(entry.as_str(), "id"))
-        .collect::<HashSet<_>>();
+        .collect::<Vec<_>>();
     let layout_entries = Regex::new(r#"<p:sldLayoutId\b[^>]*/>"#).unwrap();
-    let mut layout_ids = HashSet::new();
+    let mut layout_ids = Vec::new();
+    let mut imported_master = String::new();
     for index in 0..archive.len() {
         let mut part = archive.by_index(index).expect("package part");
         if part.name().starts_with("ppt/slideMasters/") && part.name().ends_with(".xml") {
             let mut xml = String::new();
             part.read_to_string(&mut xml)
                 .expect("slide master XML is UTF-8");
+            if part.name() == "ppt/slideMasters/slideMaster2.xml" {
+                imported_master = xml.clone();
+            }
             layout_ids.extend(
                 layout_entries
                     .find_iter(&xml)
@@ -253,8 +267,19 @@ fn imports_and_registers_distinct_slide_master_once() {
             );
         }
     }
+    let all_ids = master_ids.iter().chain(&layout_ids).collect::<HashSet<_>>();
     assert_eq!(master_ids.len(), 2);
-    assert!(master_ids.is_disjoint(&layout_ids));
+    assert_eq!(layout_ids.len(), 24);
+    assert_eq!(all_ids.len(), master_ids.len() + layout_ids.len());
+    assert_eq!(layout_part_count, 24, "repeated import must reuse layouts");
+    let imported_layout_rids = layout_entries
+        .find_iter(&imported_master)
+        .filter_map(|entry| xml_attr(entry.as_str(), "r:id"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        imported_layout_rids,
+        (1..=11).map(|id| format!("rId{id}")).collect::<Vec<_>>()
+    );
 
     let reopened = Presentation::open_bytes(&bytes).expect("reopen imported presentation");
     reopened
@@ -281,7 +306,102 @@ fn validation_rejects_slide_master_layout_id_collision() {
     let error = presentation
         .validate()
         .expect_err("master/layout ID collision must fail validation");
-    assert!(error.to_string().contains("collides with slide layout id"));
+    assert!(error
+        .to_string()
+        .contains("duplicates a master or layout id"));
+}
+
+#[test]
+fn validation_rejects_duplicate_layout_ids() {
+    let source = source_with_distinct_master(DISTINCT_MASTER_ID);
+    let bytes = rewrite_zip_part(source, "ppt/slideMasters/slideMaster2.xml", |xml| {
+        xml.replacen("id=\"2147483662\"", "id=\"2147483661\"", 1)
+    });
+    let presentation = Presentation::open_bytes(&bytes).expect("open malformed package");
+    let error = presentation
+        .validate()
+        .expect_err("duplicate layout IDs must fail validation");
+    assert!(error
+        .to_string()
+        .contains("duplicates a master or layout id"));
+}
+
+#[test]
+fn validation_rejects_r15_layout_ids_overlapping_across_registered_masters() {
+    let source = source_with_distinct_master(DISTINCT_MASTER_ID);
+    let mut destination = Presentation::open_bytes(TEMPLATE).expect("open destination");
+    destination
+        .import_slides(&source)
+        .expect("import source with distinct master");
+    let generated = destination.save_bytes().expect("save generated package");
+    let mut overlapping_ids = 2_147_483_661_u32..=2_147_483_671;
+    let r15_like = rewrite_zip_part(generated, "ppt/slideMasters/slideMaster2.xml", |xml| {
+        let layout_entry =
+            Regex::new(r#"<p:sldLayoutId\b[^>]*/>"#).expect("valid layout entry regex");
+        layout_entry
+            .replace_all(&xml, |captures: &regex::Captures<'_>| {
+                let id = overlapping_ids.next().expect("eleven imported layouts");
+                replace_xml_id(captures.get(0).unwrap().as_str(), id)
+            })
+            .into_owned()
+    });
+    assert!(overlapping_ids.next().is_none());
+
+    let presentation = Presentation::open_bytes(&r15_like).expect("open r15-like package");
+    let error = presentation
+        .validate()
+        .expect_err("cross-master duplicate layout IDs must fail validation");
+    assert!(
+        error
+            .to_string()
+            .contains("duplicates a master or layout id"),
+        "unexpected validation error: {error}"
+    );
+}
+
+#[test]
+fn import_reports_master_layout_id_exhaustion() {
+    let destination = rewrite_zip_part(TEMPLATE.to_vec(), "ppt/presentation.xml", |xml| {
+        xml.replacen("id=\"2147483660\"", "id=\"4294967295\"", 1)
+    });
+    let source = source_with_distinct_master(DISTINCT_MASTER_ID);
+    let mut presentation = Presentation::open_bytes(&destination).expect("open destination");
+    let error = presentation
+        .import_slides(&source)
+        .expect_err("combined ID space must be exhausted deterministically");
+    assert!(error
+        .to_string()
+        .contains("slide master/layout id space exhausted"));
+}
+
+#[test]
+fn normalization_preserves_noncolliding_incoming_layout_ids() {
+    let source = rewrite_zip_part(
+        source_with_distinct_master(DISTINCT_MASTER_ID),
+        "ppt/slideMasters/slideMaster2.xml",
+        |xml| xml.replacen("id=\"2147483671\"", "id=\"2147483672\"", 1),
+    );
+    let mut destination = Presentation::open_bytes(TEMPLATE).expect("open destination");
+    destination
+        .import_slides(&source)
+        .expect("normalize imported master IDs");
+    let generated = destination.save_bytes().expect("save generated package");
+    let mut archive = ZipArchive::new(Cursor::new(generated)).expect("open generated package");
+    let mut imported_master = String::new();
+    archive
+        .by_name("ppt/slideMasters/slideMaster2.xml")
+        .expect("imported master exists")
+        .read_to_string(&mut imported_master)
+        .expect("imported master is UTF-8");
+    let layout_entry = Regex::new(r#"<p:sldLayoutId\b[^>]*/>"#).unwrap();
+    let r_id_11 = layout_entry
+        .find_iter(&imported_master)
+        .find(|entry| xml_attr(entry.as_str(), "r:id").as_deref() == Some("rId11"))
+        .expect("rId11 layout entry");
+    assert_eq!(
+        xml_attr(r_id_11.as_str(), "id").as_deref(),
+        Some("2147483672")
+    );
 }
 
 fn source_without_distinct_master_registration() -> Vec<u8> {
@@ -319,7 +439,7 @@ fn source_with_distinct_master(master_id: u32) -> Vec<u8> {
         files.insert(file.name().to_string(), bytes);
     }
 
-    let master = String::from_utf8(
+    let mut master = String::from_utf8(
         files
             .get("ppt/slideMasters/slideMaster1.xml")
             .expect("template master")
@@ -327,34 +447,46 @@ fn source_with_distinct_master(master_id: u32) -> Vec<u8> {
     )
     .expect("master XML is UTF-8")
     .replacen("preserve=\"1\"", "preserve=\"0\"", 1);
+    let unused_layout_entries = Regex::new(r#"<p:sldLayoutId\b[^>]*r:id=\"rId(?:12|13)\"[^>]*/>"#)
+        .expect("valid unused layout entry regex");
+    master = unused_layout_entries.replace_all(&master, "").into_owned();
     files.insert(
         "ppt/slideMasters/slideMaster2.xml".into(),
         master.into_bytes(),
     );
-    let master_rels = files
-        .get("ppt/slideMasters/_rels/slideMaster1.xml.rels")
-        .expect("template master relationships")
-        .clone();
-    files.insert(
-        "ppt/slideMasters/_rels/slideMaster2.xml.rels".into(),
-        master_rels,
-    );
-
-    let layout_rels = String::from_utf8(
+    let master_rels = String::from_utf8(
         files
-            .get("ppt/slideLayouts/_rels/slideLayout12.xml.rels")
-            .expect("template layout relationships")
+            .get("ppt/slideMasters/_rels/slideMaster1.xml.rels")
+            .expect("template master relationships")
             .clone(),
     )
-    .expect("layout relationships are UTF-8")
-    .replace(
-        "../slideMasters/slideMaster1.xml",
-        "../slideMasters/slideMaster2.xml",
-    );
+    .expect("master relationships are UTF-8");
+    let unused_layout_relationships =
+        Regex::new(r#"<Relationship\b[^>]*Id=\"rId(?:12|13)\"[^>]*/>"#)
+            .expect("valid unused layout relationship regex");
     files.insert(
-        "ppt/slideLayouts/_rels/slideLayout12.xml.rels".into(),
-        layout_rels.into_bytes(),
+        "ppt/slideMasters/_rels/slideMaster2.xml.rels".into(),
+        unused_layout_relationships
+            .replace_all(&master_rels, "")
+            .into_owned()
+            .into_bytes(),
     );
+
+    for layout_number in 1..=11 {
+        let part = format!("ppt/slideLayouts/_rels/slideLayout{layout_number}.xml.rels");
+        let layout_rels = String::from_utf8(
+            files
+                .get(&part)
+                .expect("template layout relationships")
+                .clone(),
+        )
+        .expect("layout relationships are UTF-8")
+        .replace(
+            "../slideMasters/slideMaster1.xml",
+            "../slideMasters/slideMaster2.xml",
+        );
+        files.insert(part, layout_rels.into_bytes());
+    }
 
     let mut presentation = String::from_utf8(
         files
@@ -366,18 +498,24 @@ fn source_with_distinct_master(master_id: u32) -> Vec<u8> {
     let slide_list_start =
         presentation.find("<p:sldIdLst>").expect("slide list start") + "<p:sldIdLst>".len();
     let slide_list_end = presentation.find("</p:sldIdLst>").expect("slide list end");
-    let first_slide_end = presentation[slide_list_start..slide_list_end]
-        .find("/>")
-        .expect("first slide entry")
-        + slide_list_start
-        + 2;
-    let first_slide = presentation[slide_list_start..first_slide_end].to_string();
-    presentation.replace_range(slide_list_start..slide_list_end, &first_slide);
-    presentation = presentation.replacen(
-        "</p:sldMasterIdLst>",
-        &format!("<p:sldMasterId id=\"{master_id}\" r:id=\"rId61\"/></p:sldMasterIdLst>"),
-        1,
-    );
+    let slide_entry = Regex::new(r#"<p:sldId\b[^>]*/>"#).expect("valid slide entry regex");
+    let second_slide = slide_entry
+        .find_iter(&presentation[slide_list_start..slide_list_end])
+        .nth(1)
+        .expect("second slide entry")
+        .as_str()
+        .to_string();
+    presentation.replace_range(slide_list_start..slide_list_end, &second_slide);
+    let master_list = Regex::new(r#"(?s)<p:sldMasterIdLst>.*?</p:sldMasterIdLst>"#)
+        .expect("valid master list regex");
+    presentation = master_list
+        .replace(
+            &presentation,
+            format!(
+                "<p:sldMasterIdLst><p:sldMasterId id=\"{master_id}\" r:id=\"rId61\"/></p:sldMasterIdLst>"
+            ),
+        )
+        .into_owned();
     files.insert("ppt/presentation.xml".into(), presentation.into_bytes());
 
     let mut presentation_rels = String::from_utf8(
@@ -387,6 +525,11 @@ fn source_with_distinct_master(master_id: u32) -> Vec<u8> {
             .clone(),
     )
     .expect("presentation relationships are UTF-8");
+    let master_relationship = Regex::new(r#"<Relationship\b[^>]*Type="[^"]*/slideMaster"[^>]*/>"#)
+        .expect("valid master relationship regex");
+    presentation_rels = master_relationship
+        .replace_all(&presentation_rels, "")
+        .into_owned();
     presentation_rels = presentation_rels.replacen(
         "</Relationships>",
         "<Relationship Id=\"rId61\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster\" Target=\"slideMasters/slideMaster2.xml\"/></Relationships>",
@@ -420,10 +563,42 @@ fn source_with_distinct_master(master_id: u32) -> Vec<u8> {
     writer.finish().expect("finish source package").into_inner()
 }
 
+fn rewrite_zip_part(
+    source: Vec<u8>,
+    part_name: &str,
+    rewrite: impl FnOnce(String) -> String,
+) -> Vec<u8> {
+    let mut input = ZipArchive::new(Cursor::new(source)).expect("open source package");
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default();
+    let mut rewrite = Some(rewrite);
+    for index in 0..input.len() {
+        let mut file = input.by_index(index).expect("read source part");
+        let name = file.name().to_string();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).expect("read source bytes");
+        if name == part_name {
+            let xml = String::from_utf8(bytes).expect("rewritten part is UTF-8");
+            bytes = rewrite.take().expect("rewrite part once")(xml).into_bytes();
+        }
+        writer.start_file(name, options).expect("write source part");
+        writer.write_all(&bytes).expect("write source bytes");
+    }
+    assert!(rewrite.is_none(), "part to rewrite was present");
+    writer.finish().expect("finish source package").into_inner()
+}
+
 fn xml_attr(tag: &str, name: &str) -> Option<String> {
     let marker = format!(r#"{name}="#);
     let start = tag.find(&marker)? + marker.len();
     let value = &tag[start..];
     let value = value.strip_prefix('"')?;
     Some(value.split('"').next()?.to_string())
+}
+
+fn replace_xml_id(tag: &str, id: u32) -> String {
+    Regex::new(r#"\sid="[^"]*""#)
+        .expect("valid id attribute regex")
+        .replace(tag, format!(r#" id="{id}""#))
+        .into_owned()
 }
