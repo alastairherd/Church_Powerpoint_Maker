@@ -367,6 +367,22 @@ describe('editor render boundaries', () => {
     expect(editor.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
   });
 
+  it('marks song and psalm order items with their type class for highlighting', async () => {
+    const service = makeService({ components: [
+      ...makeService().components,
+      { id: 'song-1', type: 'song', title: 'Amazing Grace', song: null, lyric_slides: ['Lyrics'], credits: '' },
+    ] });
+    const app = createEditorApp({ document, request: async () => jsonResponse(service) });
+    await app.loadService(service);
+
+    expect(document.querySelector('[data-id="song-1"]').classList.contains('component-item--song')).toBe(true);
+    expect(document.querySelector('[data-id="psalm-1"]').classList.contains('component-item--psalm')).toBe(true);
+    const reading = document.querySelector('[data-id="reading-1"]');
+    expect(reading.classList.contains('component-item--reading')).toBe(true);
+    expect(reading.classList.contains('component-item--song')).toBe(false);
+    expect(reading.dataset.type).toBe('reading');
+  });
+
   it('marks the Teaching source select with component and field metadata', async () => {
     const service = makeService({ components: [{ id: 'teaching-1', type: 'teaching', heading: 'Teaching', source: 'heidelberg1891', selection: 'Q1', text: 'Text' }] });
     const app = createEditorApp({ document, request: async () => jsonResponse(service) });

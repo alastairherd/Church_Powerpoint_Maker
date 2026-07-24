@@ -264,6 +264,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--focus); outline:
 }
 
 .component-item:hover { background: var(--surface-alt); }
+.component-item--song { background: #edf4f8; box-shadow: inset 3px 0 0 var(--blue); }
+.component-item--song:hover { background: #e1edf5; }
+.component-item--psalm { background: var(--success-soft); box-shadow: inset 3px 0 0 var(--success); }
+.component-item--psalm:hover { background: #ddefe5; }
 .component-item.selected { background: var(--brand-soft); }
 .component-item.dragging { opacity: .5; }
 .drag-handle { border: 0; background: transparent; color: #778492; cursor: grab; font-size: 17px; }

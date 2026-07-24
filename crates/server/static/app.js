@@ -145,9 +145,10 @@ export function createEditorApp({
     ui['component-list'].replaceChildren();
     service.components.forEach((component, index) => {
       const item = doc.createElement('li');
-      item.className = `component-item${component.id === selectedId ? ' selected' : ''}`;
+      item.className = `component-item component-item--${component.type}${component.id === selectedId ? ' selected' : ''}`;
       item.draggable = true;
       item.dataset.id = component.id;
+      item.dataset.type = component.type;
 
       const handle = button('⠿', 'drag-handle', `Move ${headingOf(component)}`);
       handle.tabIndex = -1;
