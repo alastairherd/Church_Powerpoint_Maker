@@ -13,6 +13,8 @@ const SLIDE_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.presentationml.slide+xml";
 const SLIDE_REL_TYPE: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide";
+const SLIDE_MASTER_REL_TYPE: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster";
 const LAYOUT_REL_TYPE: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout";
 const MAX_COMPRESSED_PACKAGE_BYTES: usize = 25 * 1024 * 1024;
@@ -118,6 +120,7 @@ pub struct Presentation {
     slides: Vec<SlideMeta>,
     next_slide_number: u32,
     next_slide_id: u32,
+    next_master_id: u32,
     next_rel_id: u32,
 }
 
@@ -189,6 +192,14 @@ impl Presentation {
             slides.push(SlideMeta { id, rid, part });
         }
 
+        let mut max_master_id = 255;
+        let master_re = Regex::new(r#"<p:sldMasterId\b[^>]*/>"#).expect("valid regex");
+        for m in master_re.find_iter(&presentation) {
+            if let Some(id) = attr(m.as_str(), "id").and_then(|value| value.parse::<u32>().ok()) {
+                max_master_id = max_master_id.max(id);
+            }
+        }
+
         let next_slide_number = files
             .keys()
             .filter_map(|name| slide_number(name))
@@ -201,6 +212,7 @@ impl Presentation {
             slides,
             next_slide_number,
             next_slide_id: max_slide_id + 1,
+            next_master_id: max_master_id.saturating_add(1),
             next_rel_id: max_rel_id + 1,
         })
     }
@@ -451,7 +463,9 @@ impl Presentation {
 
             let destination_target = if let Some(mapped) = mapping.get(&source_target) {
                 mapped.clone()
-            } else if let Some(existing) = self.identical_import_part(source, &source_target) {
+            } else if let Some(existing) =
+                self.identical_import_part(source, &source_target, mapping)?
+            {
                 mapping.insert(source_target.clone(), existing.clone());
                 processed.insert(source_target.clone());
                 existing
@@ -489,26 +503,131 @@ impl Presentation {
         Ok(())
     }
 
-    fn identical_import_part(&self, source: &Presentation, source_part: &str) -> Option<String> {
-        let bytes = source.files.get(source_part)?;
-        let extension = source_part.rsplit_once('.')?.1;
-        let source_relationships = source.files.get(&relationships_part(source_part));
-        self.files
+    fn identical_import_part(
+        &self,
+        source: &Presentation,
+        source_part: &str,
+        mapping: &BTreeMap<String, String>,
+    ) -> Result<Option<String>> {
+        let Some(bytes) = source.files.get(source_part) else {
+            return Ok(None);
+        };
+        let Some((_, extension)) = source_part.rsplit_once('.') else {
+            return Ok(None);
+        };
+        let candidate = self
+            .files
             .iter()
             .find(|(name, candidate)| {
                 name.rsplit_once('.')
                     .is_some_and(|(_, candidate_extension)| candidate_extension == extension)
                     && *candidate == bytes
-                    && match (
-                        source_relationships,
-                        self.files.get(&relationships_part(name)),
-                    ) {
-                        (None, None) => true,
-                        (Some(source), Some(destination)) => source == destination,
-                        _ => false,
-                    }
+                    && self
+                        .import_relationships_match(source, source_part, name, mapping)
+                        .unwrap_or(false)
             })
-            .map(|(name, _)| name.clone())
+            .map(|(name, _)| name.clone());
+        Ok(candidate)
+    }
+
+    fn import_relationships_match(
+        &self,
+        source: &Presentation,
+        source_part: &str,
+        destination_part: &str,
+        mapping: &BTreeMap<String, String>,
+    ) -> Result<bool> {
+        let source_relationships = source
+            .files
+            .get(&relationships_part(source_part))
+            .map(|bytes| String::from_utf8(bytes.clone()))
+            .transpose()
+            .map_err(|_| {
+                Error::InvalidPackage(format!("{} is not utf-8", relationships_part(source_part)))
+            })?;
+        let destination_relationships = self
+            .files
+            .get(&relationships_part(destination_part))
+            .map(|bytes| String::from_utf8(bytes.clone()))
+            .transpose()
+            .map_err(|_| {
+                Error::InvalidPackage(format!(
+                    "{} is not utf-8",
+                    relationships_part(destination_part)
+                ))
+            })?;
+        let Some(source_relationships) = source_relationships else {
+            return Ok(destination_relationships.is_none());
+        };
+        let Some(destination_relationships) = destination_relationships else {
+            return Ok(false);
+        };
+        let source_tags = relationship_tags(&source_relationships);
+        let mut destination_tags = relationship_tags(&destination_relationships);
+        if source_tags.len() != destination_tags.len() {
+            return Ok(false);
+        }
+        for source_tag in source_tags {
+            let Some(destination_index) = destination_tags.iter().position(|destination_tag| {
+                relationship_shape(&source_tag) == relationship_shape(destination_tag)
+                    && self
+                        .import_relationship_target_matches(
+                            source,
+                            source_part,
+                            &source_tag,
+                            destination_part,
+                            destination_tag,
+                            mapping,
+                        )
+                        .unwrap_or(false)
+            }) else {
+                return Ok(false);
+            };
+            destination_tags.remove(destination_index);
+        }
+        Ok(destination_tags.is_empty())
+    }
+
+    fn import_relationship_target_matches(
+        &self,
+        source: &Presentation,
+        source_part: &str,
+        source_relationship: &str,
+        destination_part: &str,
+        destination_relationship: &str,
+        mapping: &BTreeMap<String, String>,
+    ) -> Result<bool> {
+        let Some(source_target) = attr(source_relationship, "Target") else {
+            return Ok(false);
+        };
+        let Some(destination_target) = attr(destination_relationship, "Target") else {
+            return Ok(false);
+        };
+        if attr(source_relationship, "TargetMode").as_deref() == Some("External") {
+            return Ok(source_target == destination_target);
+        }
+        let source_target = resolve_part_target(source_part, &source_target)?;
+        let destination_target = resolve_part_target(destination_part, &destination_target)?;
+        if mapping
+            .get(&source_target)
+            .is_some_and(|mapped| mapped == &destination_target)
+            || source_target == destination_target
+        {
+            return Ok(true);
+        }
+        let Some(source_bytes) = source.files.get(&source_target) else {
+            return Ok(false);
+        };
+        let Some(destination_bytes) = self.files.get(&destination_target) else {
+            return Ok(false);
+        };
+        if source_bytes != destination_bytes {
+            return Ok(false);
+        }
+        Ok(relationship_shapes_match(
+            source.files.get(&relationships_part(&source_target)),
+            self.files.get(&relationships_part(&destination_target)),
+        ))
     }
 
     fn allocate_import_part(&self, source_part: &str, import_number: u32) -> String {
@@ -769,6 +888,7 @@ impl Presentation {
         let content_types = self.part_string(CONTENT_TYPES)?;
         let pres_rels = self.part_string(PRESENTATION_RELS)?;
         self.validate_notes_master_reference(&pres_rels)?;
+        self.validate_slide_master_references(&pres_rels)?;
         let mut visited = HashSet::new();
         for slide in &self.slides {
             if !self.files.contains_key(&slide.part) {
@@ -813,6 +933,113 @@ impl Presentation {
             }
         }
         Ok(())
+    }
+
+    fn validate_slide_master_references(&self, pres_rels: &str) -> Result<()> {
+        let presentation = self.part_string(PRESENTATION)?;
+        let mut master_relationships = BTreeMap::new();
+        let mut master_targets = HashSet::new();
+        for relationship in relationship_tags(pres_rels) {
+            if !attr(&relationship, "Type").is_some_and(|value| value.ends_with("/slideMaster")) {
+                continue;
+            }
+            let rid = attr(&relationship, "Id").ok_or_else(|| {
+                Error::InvalidPackage("slide master relationship is missing an id".into())
+            })?;
+            let target = attr(&relationship, "Target").ok_or_else(|| {
+                Error::InvalidPackage(format!("slide master relationship {rid} has no target"))
+            })?;
+            let target = resolve_part_target(PRESENTATION, &target)?;
+            if !master_targets.insert(target.clone()) {
+                return Err(Error::InvalidPackage(format!(
+                    "duplicate slide master relationship target {target}"
+                )));
+            }
+            master_relationships.insert(rid, target);
+        }
+
+        let master_entries =
+            Regex::new(r#"<p:sldMasterId\b[^>]*/>"#).expect("valid slide master entry regex");
+        let mut entry_ids = HashSet::new();
+        let mut entry_targets = HashSet::new();
+        for entry in master_entries.find_iter(&presentation) {
+            let entry = entry.as_str();
+            let id = attr(entry, "id")
+                .ok_or_else(|| Error::InvalidPackage("slide master entry is missing id".into()))?;
+            if !entry_ids.insert(id.clone()) {
+                return Err(Error::InvalidPackage(format!(
+                    "duplicate slide master id {id}"
+                )));
+            }
+            let rid = attr(entry, "r:id").ok_or_else(|| {
+                Error::InvalidPackage(format!("slide master entry {id} is missing relationship"))
+            })?;
+            let target = master_relationships.get(&rid).ok_or_else(|| {
+                Error::InvalidPackage(format!(
+                    "slide master entry {id} references missing relationship {rid}"
+                ))
+            })?;
+            if !entry_targets.insert(target.clone()) {
+                return Err(Error::InvalidPackage(format!(
+                    "duplicate slide master entry for {target}"
+                )));
+            }
+        }
+
+        for slide in &self.slides {
+            for master in self.reachable_slide_masters(&slide.part)? {
+                if !entry_targets.contains(&master) {
+                    return Err(Error::InvalidPackage(format!(
+                        "{} reaches unregistered slide master {master}",
+                        slide.part
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn reachable_slide_masters(&self, slide_part: &str) -> Result<Vec<String>> {
+        let mut pending = vec![slide_part.to_string()];
+        let mut visited = HashSet::new();
+        let mut masters = BTreeMap::new();
+        while let Some(part) = pending.pop() {
+            if !visited.insert(part.clone()) {
+                continue;
+            }
+            let relationships_name = relationships_part(&part);
+            let Some(relationships) = self.files.get(&relationships_name) else {
+                continue;
+            };
+            let relationships = String::from_utf8(relationships.clone())
+                .map_err(|_| Error::InvalidPackage(format!("{relationships_name} is not utf-8")))?;
+            for relationship in relationship_tags(&relationships) {
+                if attr(&relationship, "TargetMode").as_deref() == Some("External") {
+                    continue;
+                }
+                let relationship_type = attr(&relationship, "Type").unwrap_or_default();
+                let is_master = relationship_type.ends_with("/slideMaster");
+                let is_layout = relationship_type.ends_with("/slideLayout");
+                if !is_master && !is_layout {
+                    continue;
+                }
+                let target = attr(&relationship, "Target").ok_or_else(|| {
+                    Error::InvalidPackage(format!(
+                        "relationship in {relationships_name} has no target"
+                    ))
+                })?;
+                let target = resolve_part_target(&part, &target)?;
+                if !self.files.contains_key(&target) {
+                    return Err(Error::MissingPart(target));
+                }
+                if is_master {
+                    masters.insert(target.clone(), ());
+                } else {
+                    pending.push(target);
+                }
+            }
+        }
+        Ok(masters.into_keys().collect())
     }
 
     fn validate_part_graph(
@@ -863,6 +1090,9 @@ impl Presentation {
     }
 
     fn add_slide_to_presentation(&mut self, part: String) -> Result<usize> {
+        for master in self.reachable_slide_masters(&part)? {
+            self.register_slide_master(&master)?;
+        }
         self.add_content_type(&part)?;
         let rid = format!("rId{}", self.next_rel_id);
         self.next_rel_id += 1;
@@ -912,6 +1142,89 @@ impl Presentation {
         self.files
             .insert(PRESENTATION_RELS.into(), xml.into_bytes());
         Ok(())
+    }
+
+    fn register_slide_master(&mut self, master_part: &str) -> Result<()> {
+        let mut relationships_xml = self.part_string(PRESENTATION_RELS)?;
+        let mut master_rid = None;
+        for relationship in relationship_tags(&relationships_xml) {
+            if !attr(&relationship, "Type").is_some_and(|value| value.ends_with("/slideMaster")) {
+                continue;
+            }
+            let target = attr(&relationship, "Target").ok_or_else(|| {
+                Error::InvalidPackage("slide master relationship has no target".into())
+            })?;
+            if resolve_part_target(PRESENTATION, &target)? == master_part {
+                master_rid = attr(&relationship, "Id");
+                break;
+            }
+        }
+
+        let master_rid = if let Some(rid) = master_rid {
+            rid
+        } else {
+            let rid = self.allocate_presentation_relationship_id(&relationships_xml)?;
+            let target = master_part.strip_prefix("ppt/").unwrap_or(master_part);
+            let relationship = format!(
+                r#"<Relationship Id="{rid}" Type="{SLIDE_MASTER_REL_TYPE}" Target="{target}"/>"#
+            );
+            insert_before(&mut relationships_xml, "</Relationships>", &relationship)?;
+            self.files.insert(
+                PRESENTATION_RELS.into(),
+                relationships_xml.clone().into_bytes(),
+            );
+            rid
+        };
+
+        let mut presentation = self.part_string(PRESENTATION)?;
+        let entries =
+            Regex::new(r#"<p:sldMasterId\b[^>]*/>"#).expect("valid slide master entry regex");
+        let already_registered = entries.find_iter(&presentation).any(|entry| {
+            attr(entry.as_str(), "r:id").as_deref() == Some(master_rid.as_str())
+                || attr(entry.as_str(), "r:id")
+                    .and_then(|rid| {
+                        relationship_tags(&relationships_xml)
+                            .into_iter()
+                            .find(|relationship| {
+                                attr(relationship, "Id").as_deref() == Some(rid.as_str())
+                            })
+                    })
+                    .and_then(|relationship| attr(&relationship, "Target"))
+                    .and_then(|target| resolve_part_target(PRESENTATION, &target).ok())
+                    .as_deref()
+                    == Some(master_part)
+        });
+        if !already_registered {
+            let id = self.next_master_id.max(256);
+            self.next_master_id = id.saturating_add(1);
+            let entry = format!(r#"<p:sldMasterId id="{id}" r:id="{master_rid}"/>"#);
+            insert_before(&mut presentation, "</p:sldMasterIdLst>", &entry)?;
+            self.files
+                .insert(PRESENTATION.into(), presentation.into_bytes());
+        }
+        Ok(())
+    }
+
+    fn allocate_presentation_relationship_id(&mut self, relationships_xml: &str) -> Result<String> {
+        let existing = relationship_tags(relationships_xml);
+        loop {
+            let rid = format!("rId{}", self.next_rel_id);
+            if !existing
+                .iter()
+                .any(|relationship| attr(relationship, "Id").as_deref() == Some(rid.as_str()))
+            {
+                if self.next_rel_id < u32::MAX {
+                    self.next_rel_id += 1;
+                }
+                return Ok(rid);
+            }
+            if self.next_rel_id == u32::MAX {
+                return Err(Error::InvalidPackage(
+                    "presentation relationship id space exhausted".into(),
+                ));
+            }
+            self.next_rel_id += 1;
+        }
     }
 
     fn remove_presentation_relationship(&mut self, rid: &str) -> Result<()> {
@@ -1088,6 +1401,36 @@ fn utf8_part(files: &BTreeMap<String, Vec<u8>>, part: &str) -> Result<String> {
 fn relationship_tags(xml: &str) -> Vec<String> {
     let re = Regex::new(r#"<Relationship\b[^>]*/>"#).expect("valid regex");
     re.find_iter(xml).map(|m| m.as_str().to_string()).collect()
+}
+
+fn relationship_shape(tag: &str) -> (Option<String>, Option<String>, Option<String>) {
+    (attr(tag, "Id"), attr(tag, "Type"), attr(tag, "TargetMode"))
+}
+
+fn relationship_shapes_match(source: Option<&Vec<u8>>, destination: Option<&Vec<u8>>) -> bool {
+    match (source, destination) {
+        (None, None) => true,
+        (Some(source), Some(destination)) => {
+            let Ok(source) = String::from_utf8(source.clone()) else {
+                return false;
+            };
+            let Ok(destination) = String::from_utf8(destination.clone()) else {
+                return false;
+            };
+            let mut source_shapes = relationship_tags(&source)
+                .iter()
+                .map(|tag| relationship_shape(tag))
+                .collect::<Vec<_>>();
+            let mut destination_shapes = relationship_tags(&destination)
+                .iter()
+                .map(|tag| relationship_shape(tag))
+                .collect::<Vec<_>>();
+            source_shapes.sort();
+            destination_shapes.sort();
+            source_shapes == destination_shapes
+        }
+        _ => false,
+    }
 }
 
 fn attr(tag: &str, name: &str) -> Option<String> {
