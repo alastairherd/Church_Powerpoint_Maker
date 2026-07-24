@@ -13,7 +13,10 @@ fn converts_original_american_spellings_to_british() {
 fn removes_esv_verse_markers_from_plain_runs() {
     let runs = scripture_runs("[1] In the beginning [2] And the earth");
 
-    assert_eq!(runs.iter().map(|run| run.text.as_str()).collect::<String>(), "In the beginning And the earth");
+    assert_eq!(
+        runs.iter().map(|run| run.text.as_str()).collect::<String>(),
+        "In the beginning And the earth"
+    );
     assert!(runs.iter().all(|run| !run.superscript));
 }
 

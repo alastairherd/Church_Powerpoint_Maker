@@ -242,7 +242,8 @@ async fn scripture_and_psalm_shapes_match_editor_loaders() {
 }
 
 #[tokio::test]
-async fn teaching_loader_accepts_friendly_wsc_selection_and_rejects_unsupported_automatic_sources() {
+async fn teaching_loader_accepts_friendly_wsc_selection_and_rejects_unsupported_automatic_sources()
+{
     let (app, cookie, _) = authenticated().await;
     let teaching = app
         .clone()
@@ -563,7 +564,12 @@ async fn generates_an_immutable_revision_without_locking() {
         .unwrap();
     assert_eq!(downloaded.status(), StatusCode::OK);
     assert_eq!(
-        downloaded.headers().get(CONTENT_TYPE).unwrap().to_str().unwrap(),
+        downloaded
+            .headers()
+            .get(CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     );
     assert_eq!(

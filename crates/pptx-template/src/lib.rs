@@ -17,6 +17,7 @@ const SLIDE_MASTER_REL_TYPE: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster";
 const LAYOUT_REL_TYPE: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout";
+const MIN_SLIDE_MASTER_ID: u32 = 2_147_483_648;
 const MAX_COMPRESSED_PACKAGE_BYTES: usize = 25 * 1024 * 1024;
 const MAX_DECOMPRESSED_PACKAGE_BYTES: u64 = 200 * 1024 * 1024;
 const MAX_PACKAGE_PARTS: usize = 10_000;
@@ -192,7 +193,7 @@ impl Presentation {
             slides.push(SlideMeta { id, rid, part });
         }
 
-        let mut max_master_id = 255;
+        let mut max_master_id = MIN_SLIDE_MASTER_ID - 1;
         let master_re = Regex::new(r#"<p:sldMasterId\b[^>]*/>"#).expect("valid regex");
         for m in master_re.find_iter(&presentation) {
             if let Some(id) = attr(m.as_str(), "id").and_then(|value| value.parse::<u32>().ok()) {
@@ -937,6 +938,7 @@ impl Presentation {
 
     fn validate_slide_master_references(&self, pres_rels: &str) -> Result<()> {
         let presentation = self.part_string(PRESENTATION)?;
+        let layout_ids = self.slide_layout_ids()?;
         let mut master_relationships = BTreeMap::new();
         let mut master_targets = HashSet::new();
         for relationship in relationship_tags(pres_rels) {
@@ -966,9 +968,15 @@ impl Presentation {
             let entry = entry.as_str();
             let id = attr(entry, "id")
                 .ok_or_else(|| Error::InvalidPackage("slide master entry is missing id".into()))?;
-            if !entry_ids.insert(id.clone()) {
+            let id_number = parse_slide_master_id(&id)?;
+            if !entry_ids.insert(id_number) {
                 return Err(Error::InvalidPackage(format!(
                     "duplicate slide master id {id}"
+                )));
+            }
+            if layout_ids.contains(&id_number) {
+                return Err(Error::InvalidPackage(format!(
+                    "slide master id {id} collides with slide layout id {id}"
                 )));
             }
             let rid = attr(entry, "r:id").ok_or_else(|| {
@@ -997,6 +1005,27 @@ impl Presentation {
             }
         }
         Ok(())
+    }
+
+    fn slide_layout_ids(&self) -> Result<HashSet<u32>> {
+        let layout_entry =
+            Regex::new(r#"<p:sldLayoutId\b[^>]*/>"#).expect("valid slide layout entry regex");
+        let mut ids = HashSet::new();
+        for (part, bytes) in self.files.iter().filter(|(part, _)| {
+            part.starts_with("ppt/slideMasters/")
+                && part.ends_with(".xml")
+                && !part.contains("/_rels/")
+        }) {
+            let xml = String::from_utf8(bytes.clone())
+                .map_err(|_| Error::InvalidPackage(format!("{part} is not utf-8")))?;
+            for entry in layout_entry.find_iter(&xml) {
+                let id = attr(entry.as_str(), "id").ok_or_else(|| {
+                    Error::InvalidPackage(format!("{part} slide layout entry is missing id"))
+                })?;
+                ids.insert(parse_slide_layout_id(&id)?);
+            }
+        }
+        Ok(ids)
     }
 
     fn reachable_slide_masters(&self, slide_part: &str) -> Result<Vec<String>> {
@@ -1195,14 +1224,39 @@ impl Presentation {
                     == Some(master_part)
         });
         if !already_registered {
-            let id = self.next_master_id.max(256);
-            self.next_master_id = id.saturating_add(1);
+            let id = self.allocate_slide_master_id()?;
             let entry = format!(r#"<p:sldMasterId id="{id}" r:id="{master_rid}"/>"#);
             insert_before(&mut presentation, "</p:sldMasterIdLst>", &entry)?;
             self.files
                 .insert(PRESENTATION.into(), presentation.into_bytes());
         }
         Ok(())
+    }
+
+    fn allocate_slide_master_id(&mut self) -> Result<u32> {
+        let presentation = self.part_string(PRESENTATION)?;
+        let master_entries =
+            Regex::new(r#"<p:sldMasterId\b[^>]*/>"#).expect("valid slide master entry regex");
+        let mut used_ids = self.slide_layout_ids()?;
+        for entry in master_entries.find_iter(&presentation) {
+            let id = attr(entry.as_str(), "id")
+                .ok_or_else(|| Error::InvalidPackage("slide master entry is missing id".into()))?;
+            used_ids.insert(parse_slide_master_id(&id)?);
+        }
+
+        let mut candidate = self.next_master_id.max(MIN_SLIDE_MASTER_ID);
+        loop {
+            if !used_ids.contains(&candidate) {
+                self.next_master_id = candidate.saturating_add(1);
+                return Ok(candidate);
+            }
+            if candidate == u32::MAX {
+                return Err(Error::InvalidPackage(
+                    "slide master id space exhausted".into(),
+                ));
+            }
+            candidate += 1;
+        }
     }
 
     fn allocate_presentation_relationship_id(&mut self, relationships_xml: &str) -> Result<String> {
@@ -1436,6 +1490,30 @@ fn relationship_shapes_match(source: Option<&Vec<u8>>, destination: Option<&Vec<
 fn attr(tag: &str, name: &str) -> Option<String> {
     let re = Regex::new(&format!(r#"\b{}="([^"]*)""#, regex::escape(name))).ok()?;
     re.captures(tag).map(|cap| cap[1].to_string())
+}
+
+fn parse_slide_master_id(value: &str) -> Result<u32> {
+    let id = value
+        .parse::<u32>()
+        .map_err(|_| Error::InvalidPackage(format!("invalid slide master id {value}")))?;
+    if id < MIN_SLIDE_MASTER_ID {
+        return Err(Error::InvalidPackage(format!(
+            "slide master id {value} is outside the schema range"
+        )));
+    }
+    Ok(id)
+}
+
+fn parse_slide_layout_id(value: &str) -> Result<u32> {
+    let id = value
+        .parse::<u32>()
+        .map_err(|_| Error::InvalidPackage(format!("invalid slide layout id {value}")))?;
+    if id < MIN_SLIDE_MASTER_ID {
+        return Err(Error::InvalidPackage(format!(
+            "slide layout id {value} is outside the schema range"
+        )));
+    }
+    Ok(id)
 }
 
 fn rid_number(rid: &str) -> u32 {

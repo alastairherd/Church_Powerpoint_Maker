@@ -1,10 +1,12 @@
 use pptx_template::{Presentation, Run};
-use std::collections::BTreeMap;
+use regex::Regex;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{Cursor, Read, Write};
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
 const TEMPLATE: &[u8] = include_bytes!("../../deck-builder/assets/template.pptx");
+const DISTINCT_MASTER_ID: u32 = 2_147_484_000;
 
 #[test]
 fn round_trip_preserves_slide_relationship_integrity() {
@@ -196,7 +198,7 @@ fn imports_complete_slides_from_another_presentation_in_order() {
 
 #[test]
 fn imports_and_registers_distinct_slide_master_once() {
-    let source_bytes = source_with_distinct_master();
+    let source_bytes = source_with_distinct_master(DISTINCT_MASTER_ID);
     let mut destination = Presentation::open_bytes(TEMPLATE).expect("open destination");
 
     destination
@@ -229,8 +231,30 @@ fn imports_and_registers_distinct_slide_master_once() {
             .count(),
         2
     );
-    assert_eq!(presentation.matches("r:id=\"rId61\"").count(), 1);
     assert!(presentation_rels.contains("Target=\"slideMasters/slideMaster2.xml\""));
+
+    let master_entries = Regex::new(r#"<p:sldMasterId\b[^>]*/>"#).unwrap();
+    let master_ids = master_entries
+        .find_iter(&presentation)
+        .filter_map(|entry| xml_attr(entry.as_str(), "id"))
+        .collect::<HashSet<_>>();
+    let layout_entries = Regex::new(r#"<p:sldLayoutId\b[^>]*/>"#).unwrap();
+    let mut layout_ids = HashSet::new();
+    for index in 0..archive.len() {
+        let mut part = archive.by_index(index).expect("package part");
+        if part.name().starts_with("ppt/slideMasters/") && part.name().ends_with(".xml") {
+            let mut xml = String::new();
+            part.read_to_string(&mut xml)
+                .expect("slide master XML is UTF-8");
+            layout_ids.extend(
+                layout_entries
+                    .find_iter(&xml)
+                    .filter_map(|entry| xml_attr(entry.as_str(), "id")),
+            );
+        }
+    }
+    assert_eq!(master_ids.len(), 2);
+    assert!(master_ids.is_disjoint(&layout_ids));
 
     let reopened = Presentation::open_bytes(&bytes).expect("reopen imported presentation");
     reopened
@@ -250,8 +274,18 @@ fn validation_rejects_unregistered_reachable_slide_master() {
         .contains("reaches unregistered slide master"));
 }
 
+#[test]
+fn validation_rejects_slide_master_layout_id_collision() {
+    let presentation =
+        Presentation::open_bytes(&source_with_distinct_master(2_147_483_661)).expect("open");
+    let error = presentation
+        .validate()
+        .expect_err("master/layout ID collision must fail validation");
+    assert!(error.to_string().contains("collides with slide layout id"));
+}
+
 fn source_without_distinct_master_registration() -> Vec<u8> {
-    let source = source_with_distinct_master();
+    let source = source_with_distinct_master(DISTINCT_MASTER_ID);
     let mut input = ZipArchive::new(Cursor::new(source)).expect("open source package");
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default();
@@ -262,9 +296,11 @@ fn source_without_distinct_master_registration() -> Vec<u8> {
         file.read_to_end(&mut bytes).expect("read source bytes");
         if name == "ppt/presentation.xml" {
             let xml = String::from_utf8(bytes).expect("presentation XML is UTF-8");
-            bytes = xml
-                .replace("<p:sldMasterId id=\"2147483661\" r:id=\"rId61\"/>", "")
-                .into_bytes();
+            let entry = Regex::new(&format!(
+                r#"<p:sldMasterId\b id="{DISTINCT_MASTER_ID}"[^>]*/>"#
+            ))
+            .expect("valid master entry regex");
+            bytes = entry.replace(&xml, "").into_owned().into_bytes();
         }
         writer.start_file(name, options).expect("write source part");
         writer.write_all(&bytes).expect("write source bytes");
@@ -272,7 +308,7 @@ fn source_without_distinct_master_registration() -> Vec<u8> {
     writer.finish().expect("finish source package").into_inner()
 }
 
-fn source_with_distinct_master() -> Vec<u8> {
+fn source_with_distinct_master(master_id: u32) -> Vec<u8> {
     let mut input = ZipArchive::new(Cursor::new(TEMPLATE)).expect("open template package");
     let mut files = BTreeMap::new();
     for index in 0..input.len() {
@@ -339,7 +375,7 @@ fn source_with_distinct_master() -> Vec<u8> {
     presentation.replace_range(slide_list_start..slide_list_end, &first_slide);
     presentation = presentation.replacen(
         "</p:sldMasterIdLst>",
-        "<p:sldMasterId id=\"2147483661\" r:id=\"rId61\"/></p:sldMasterIdLst>",
+        &format!("<p:sldMasterId id=\"{master_id}\" r:id=\"rId61\"/></p:sldMasterIdLst>"),
         1,
     );
     files.insert("ppt/presentation.xml".into(), presentation.into_bytes());
@@ -382,4 +418,12 @@ fn source_with_distinct_master() -> Vec<u8> {
         writer.write_all(&bytes).expect("write source bytes");
     }
     writer.finish().expect("finish source package").into_inner()
+}
+
+fn xml_attr(tag: &str, name: &str) -> Option<String> {
+    let marker = format!(r#"{name}="#);
+    let start = tag.find(&marker)? + marker.len();
+    let value = &tag[start..];
+    let value = value.strip_prefix('"')?;
+    Some(value.split('"').next()?.to_string())
 }
