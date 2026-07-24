@@ -1,45 +1,68 @@
-# Powerpoint_update
-Project to auto-generate a Powerpoint from set variables
+# TWPC Service Builder
 
-I will be expanding on this later, but here is a general outline of how the script works.
+The supported application is an authenticated Rust/Axum website for preparing and generating TWPC service PowerPoints. Staff choose a service preset, arrange and edit its components, review warnings, and generate immutable `.pptx` revisions. The old Python generator is retained for reference only in [`legacy/python/`](legacy/python/).
 
-### Variables
-This is a script that is used to generate the variables that will be used in the the other scripts. It is imported into:
+## What is implemented
 
-### Functions
-Here we have all our classes to be used later in the code, and at the bottom we have a another variable creation.
-Because all these new variables are created using the above functions they live in this file rather than the previous variables file
+- AM, traditional PM, praise-and-worship PM, AM Lord's Supper, and PM Lord's Supper presets based on the supplied services
+- Ordered, editable components for notices, call to worship, prayer cues, songs, psalms, readings, teaching, liturgy, and custom slides
+- Staff sign-in using an Argon2 password hash, signed HTTP-only sessions, CSRF protection, login throttling, and audit display names
+- Five-minute editing leases, autosave conflict detection, archive/restore, generated revision history, and 730-day deck-expiry metadata
+- Server-side ESV lookup with manual-entry fallback
+- Conditional object writes through an injected object-store trait, with Cloudflare R2 in production and an in-memory test implementation
+- Server-rendered Askama pages, static CSS, and browser ES modules with no Node toolchain
+- Embedded Sing Psalms, WSC, liturgy, and canonical 4:3 TWPC PowerPoint assets
 
-### Slide_Making
-Here we have the class for filling slides as well as functions to write to the slides. There is also a flag assignment for categorising what type of slide we are dealing with.
+## Configuration
 
-### Powerpoint
-This is a nice and simple script that runs the previous scripts. It imports the template file and then writes into it, cycling through the variables created and writing them into the powerpoint. If the variable would not write properly to a slide then it just moves on.
+Production requires:
 
-Then it saves the newly named powerpoint at the end.
-
-### Setup
-Install the required dependencies with:
-
-```bash
-pip install -r requirements.txt
+```text
+ESV_API_KEY
+STAFF_PASSWORD_HASH
+SESSION_SIGNING_SECRET
+R2_ACCOUNT_ID
+R2_BUCKET
+R2_ACCESS_KEY_ID
+R2_SECRET_ACCESS_KEY
 ```
 
-The ESV API credentials should be supplied via environment variables so that
-they are not committed to version control:
+`STAFF_PASSWORD_HASH` must be an Argon2 PHC string. `SESSION_SIGNING_SECRET` must contain at least 32 characters. Configure the R2 bucket as private and apply a 730-day lifecycle rule to `generated/services/`; entity definitions and immutable source versions must not use that expiry rule.
+
+For disposable local development, set `OBJECT_STORE=memory`. Production defaults to R2 and fails closed when any R2 setting is missing.
+
+## Development
+
+The project pins Rust 1.97.1 in `rust-toolchain.toml`, CI, and Docker.
 
 ```bash
-export ESV_API_KEY="your-api-key"
-export ESV_API_URL="https://api.esv.org/v3/passage/text/"  # optional
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo run -p server
 ```
 
-#### JSON Files
-There are several JSON files that are used in this script:
-1. psalms.json
-   - This was manually created from the Free Church of Scotlands "Sing Psalms" zip file
-2. components.json
-   - This was manually created from a list of components that are used in our churches service
-3. wsc.json
-   - This comes from the "A Puritians Mind" website
-   - Citations are in the file
+The Docker image is the deployment source of truth:
 
+```bash
+docker build -t twpc-service-builder .
+docker run --rm -p 8080:8080 --env-file .env twpc-service-builder
+```
+
+The supplied 86-deck song archive has a dry-run capable, idempotent importer. It validates the exact expected total of 365 ordered slides before writing immutable R2 objects:
+
+```bash
+cargo run -p server --bin import-song-library -- "Attachments-sample services.zip" --dry-run
+cargo run -p server --bin import-song-library -- "Attachments-sample services.zip"
+```
+
+Only `/login`, `/healthz`, and the immutable static assets used by the login page are public. Service, preview, history, reporting, and generation APIs require a staff session.
+
+## Repository layout
+
+```text
+crates/pptx-template/   OOXML package and slide operations
+crates/deck-builder/    domain model, presets, embedded data, deck generation
+crates/server/          Axum routes, authentication, storage, templates and UI
+legacy/python/          unsupported historical generator and its assets
+```

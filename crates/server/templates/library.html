@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf }}">
+  <title>Song library · TWPC</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="wordmark" href="/" aria-label="TWPC Service Builder home">
+        <span class="brand-mark" aria-hidden="true">TW</span>
+        <span><strong>TWPC</strong><small>Service Builder</small></span>
+      </a>
+      <nav aria-label="Main navigation">
+        <a class="nav-link" href="/"><span aria-hidden="true">◫</span> Services</a>
+        <a class="nav-link active" href="/library" aria-current="page"><span aria-hidden="true">♫</span> Song library</a>
+        <a class="nav-link" href="/generated"><span aria-hidden="true">▣</span> Generated PowerPoints</a>
+        <a class="nav-link" href="/admin"><span aria-hidden="true">⚙</span> Administration</a>
+      </nav>
+      <div class="sidebar-footer">
+        <span class="avatar" aria-hidden="true">{{ staff_initial }}</span>
+        <span><strong>{{ staff_name }}</strong><small>Staff</small></span>
+        <button class="icon-button sign-out" type="button" aria-label="Sign out">↗</button>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="breadcrumbs"><strong>Song library</strong></p>
+          <h1>Song library</h1>
+        </div>
+        <div class="topbar-actions">
+          <a class="button button-secondary button-link" href="/">Return to services</a>
+        </div>
+      </header>
+
+      <section class="page-content library-page" aria-labelledby="library-heading">
+        <div class="page-heading">
+          <div>
+            <h2 id="library-heading">Choose and review stored songs</h2>
+            <p>Search titles and aliases, then inspect the exact current version and extracted slide text.</p>
+          </div>
+          <p class="record-count" id="song-count" aria-live="polite">Loading catalogue…</p>
+        </div>
+
+        <div class="search-toolbar">
+          <label for="song-search">Search songs</label>
+          <div class="search-input-wrap">
+            <span aria-hidden="true">⌕</span>
+            <input id="song-search" type="search" autocomplete="off" placeholder="Search by title or alias">
+          </div>
+        </div>
+
+        <div class="library-layout">
+          <div class="library-results" id="library-results" aria-live="polite" aria-busy="true">
+            <div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div>
+          </div>
+          <aside class="song-preview" id="song-preview" aria-live="polite">
+            <div class="empty-preview">
+              <span aria-hidden="true">♫</span>
+              <h2>Select a song</h2>
+              <p>Its version details and extracted slide text will appear here.</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/static/library.js"></script>
+</body>
+</html>

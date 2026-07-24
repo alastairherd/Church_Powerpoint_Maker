@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Staff sign in · TWPC Service Builder</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <section class="login-brand" aria-labelledby="login-title">
+      <div class="brand-mark" aria-hidden="true">TW</div>
+      <p class="brand-name">Tunbridge Wells Presbyterian Church</p>
+      <h1 id="login-title">Prepare Sunday’s service with confidence.</h1>
+      <p>Build the order, review every slide, and keep previous services together in one staff-only workspace.</p>
+    </section>
+    <section class="login-panel" aria-label="Staff sign in">
+      <div>
+        <p class="section-label">Staff access</p>
+        <h2>Sign in</h2>
+        <p class="supporting">Use the shared staff password and enter your name for the service history.</p>
+      </div>
+      {% if has_error %}<div class="alert alert-error" role="alert">{{ error }}</div>{% endif %}
+      <form method="post" action="/login" class="form-stack">
+        <label for="display-name">Your name</label>
+        <input id="display-name" name="display_name" autocomplete="name" maxlength="60" required autofocus>
+        <label for="password">Shared password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button class="button button-primary button-block" type="submit">Open service builder</button>
+      </form>
+      <p class="privacy-note">Your name is recorded on saves and generated revisions.</p>
+    </section>
+  </main>
+</body>
+</html>

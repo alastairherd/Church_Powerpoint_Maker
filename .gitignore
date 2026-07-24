@@ -1,6 +1,11 @@
 __pycache__/
 *.pyc
 *.pptx
-!template.pptx
-!example_from_template.pptx
+!crates/deck-builder/assets/template.pptx
+!legacy/python/*.pptx
+example-pptx/
 .ipynb_checkpoints/
+target/
+.env
+.env.local
+envs.txt

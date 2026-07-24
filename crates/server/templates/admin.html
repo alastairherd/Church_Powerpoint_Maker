@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf }}">
+  <title>Administration · TWPC</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="wordmark" href="/" aria-label="TWPC Service Builder home">
+        <span class="brand-mark" aria-hidden="true">TW</span>
+        <span><strong>TWPC</strong><small>Service Builder</small></span>
+      </a>
+      <nav aria-label="Main navigation">
+        <a class="nav-link" href="/"><span aria-hidden="true">◫</span> Services</a>
+        <a class="nav-link" href="/library"><span aria-hidden="true">♫</span> Song library</a>
+        <a class="nav-link" href="/generated"><span aria-hidden="true">▣</span> Generated PowerPoints</a>
+        <a class="nav-link active" href="/admin" aria-current="page"><span aria-hidden="true">⚙</span> Administration</a>
+      </nav>
+      <div class="sidebar-footer">
+        <span class="avatar" aria-hidden="true">{{ staff_initial }}</span>
+        <span><strong>{{ staff_name }}</strong><small>Staff</small></span>
+        <button class="icon-button sign-out" type="button" aria-label="Sign out">↗</button>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div><p class="breadcrumbs"><strong>Administration</strong></p><h1>Administration</h1></div>
+      </header>
+
+      <section class="page-content admin-page" aria-labelledby="admin-heading">
+        <div class="page-heading">
+          <div><h2 id="admin-heading">Staff settings</h2><p>Changes are versioned and apply to newly generated service decks.</p></div>
+        </div>
+
+        <div class="admin-layout">
+          <section class="settings-section" aria-labelledby="licence-heading">
+            <div class="settings-copy">
+              <h2 id="licence-heading">CCLI licence</h2>
+              <p>The church licence number is placed on generated song slides. Historical revisions retain the setting used when they were created.</p>
+            </div>
+            <form id="settings-form" class="settings-form">
+              <label for="ccli-number">Licence number</label>
+              <input id="ccli-number" name="ccli_licence_number" maxlength="32" autocomplete="off" required>
+              <p class="field-note" id="settings-version">Loading current setting…</p>
+              <button class="button button-primary" id="save-settings" type="submit">Save CCLI setting</button>
+            </form>
+          </section>
+
+          <section class="settings-section" aria-labelledby="catalogue-heading">
+            <div class="settings-copy">
+              <h2 id="catalogue-heading">Song catalogue</h2>
+              <p>Review imported variants, slide counts, rights warnings, and extracted slide text in the permanent library.</p>
+            </div>
+            <div class="admin-action">
+              <strong id="admin-song-count">Loading songs…</strong>
+              <a class="button button-secondary button-link" href="/library">Open song library</a>
+            </div>
+          </section>
+
+          <section class="settings-section" aria-labelledby="storage-heading">
+            <div class="settings-copy">
+              <h2 id="storage-heading">Storage policy</h2>
+              <p>Song sources and metadata are retained in private R2 storage. Generated deck files expire after 730 days; their service definitions and revision records remain.</p>
+            </div>
+            <span class="status-badge status-ok">R2 configured</span>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/static/admin.js"></script>
+</body>
+</html>
