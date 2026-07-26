@@ -627,6 +627,53 @@ fn embedded_sources_resolve_catechism_psalm_and_fixed_component() {
     }
 }
 
+/// The confession and assurance used in ordinary services must match the wording baked into
+/// `template.pptx` slides 23-26, which the Lord's Supper presets clone verbatim. Keeping the two
+/// paths in step is the whole point of these assertions.
+#[test]
+fn confession_and_assurance_match_the_template_wording() {
+    let template = Presentation::open_bytes(include_bytes!("../assets/template.pptx"))
+        .expect("template opens");
+
+    let confession = FixedComponent::find("confession").expect("confession exists");
+    assert_eq!(confession.speaker, "All.");
+    assert_eq!(confession.slides.len(), 3);
+    assert!(confession.slides[0]
+        .starts_with("Almighty God, Father of our Lord Jesus Christ, Maker of all things,"));
+    assert!(confession.slides[1].starts_with("We do earnestly repent,"));
+    assert!(confession.slides[2].ends_with("Through Jesus Christ our Lord.  Amen."));
+
+    let assurance = FixedComponent::find("assurance").expect("assurance exists");
+    assert_eq!(assurance.speaker, "Minister.");
+    assert_eq!(assurance.slides.len(), 1);
+    assert!(assurance.slides[0].starts_with("Almighty God, our heavenly Father,"));
+
+    for (key, template_slides) in [
+        ("confession", [23, 24, 25].as_slice()),
+        ("assurance", &[26]),
+    ] {
+        let component = FixedComponent::find(key).expect("component exists");
+        for (page, &template_slide) in component.slides.iter().zip(template_slides) {
+            let template_text = template.slide_text(template_slide).unwrap();
+            for line in page.split('\n') {
+                // The template's assurance slide ends "Amen" without a full stop; the service
+                // decks the church actually uses have "Amen." and the JSON follows those, so
+                // trailing punctuation is not compared.
+                let line = normalise_whitespace(line);
+                let line = line.trim_end_matches('.');
+                assert!(
+                    normalise_whitespace(&template_text).contains(line),
+                    "{key}: line {line:?} is missing from template slide {template_slide}"
+                );
+            }
+        }
+    }
+}
+
+fn normalise_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn xml_is_parseable(xml: &str) -> bool {
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut buf = Vec::new();
@@ -754,7 +801,7 @@ async fn ordinary_blank_liturgy_uses_fixed_component_renderer() {
         .expect("ordinary deck builds");
     let generated = Presentation::open_bytes(&bytes).expect("generated deck opens");
 
-    assert_eq!(generated.slide_count(), 2);
+    assert_eq!(generated.slide_count(), 3);
     assert_eq!(
         calls.lock().unwrap().clone(),
         vec!["confession".to_string()]
