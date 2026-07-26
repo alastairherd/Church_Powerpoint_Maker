@@ -595,16 +595,65 @@ fn importing_a_template_derived_song_deck_gives_its_master_private_layouts() {
 
 #[test]
 fn validation_rejects_a_layout_owned_by_another_registered_master() {
+    let error = Presentation::open_bytes(&cross_linked_package())
+        .expect("open cross-linked package")
+        .validate()
+        .expect_err("a layout owned by another master must fail validation");
+    assert!(
+        error.to_string().contains("belongs to"),
+        "unexpected validation error: {error}"
+    );
+}
+
+/// Decks generated before layout ownership was enforced are still in storage and PowerPoint
+/// refuses them outright, so the only way to recover their slides is to mend the stored file.
+#[test]
+fn repair_heals_a_deck_whose_master_lists_another_masters_layouts() {
+    let broken = cross_linked_package();
+    let mut presentation = Presentation::open_bytes(&broken).expect("open broken package");
+    presentation
+        .validate()
+        .expect_err("the package starts out broken");
+
+    assert!(
+        presentation.repair().expect("repair runs"),
+        "repair changed the package"
+    );
+    presentation
+        .validate()
+        .expect("repaired package satisfies layout ownership");
+
+    let healed = presentation.save_bytes().expect("save healed package");
+    let reopened = Presentation::open_bytes(&healed).expect("reopen healed package");
+    reopened.validate().expect("healed package validates");
+
+    // The slides are the whole point of recovering the file, so they must survive untouched.
+    let before = Presentation::open_bytes(&broken).expect("reopen broken package");
+    assert_eq!(reopened.slide_count(), before.slide_count());
+    for index in 0..before.slide_count() {
+        assert_eq!(
+            reopened.slide_xml(index).unwrap(),
+            before.slide_xml(index).unwrap(),
+            "slide {index} was altered by the repair"
+        );
+    }
+
+    // Repairing an already-sound package must be a no-op, so serving a deck cannot keep
+    // rewriting it.
+    let mut again = Presentation::open_bytes(&healed).expect("reopen healed package");
+    assert!(!again.repair().expect("second repair runs"));
+}
+
+/// An imported master pointed back at the destination master's layouts: the shape import
+/// de-duplication produced before it was fixed, and the shape sitting in storage today.
+fn cross_linked_package() -> Vec<u8> {
     let source = source_with_distinct_master(DISTINCT_MASTER_ID);
     let mut destination = Presentation::open_bytes(TEMPLATE).expect("open destination");
     destination
         .import_slides(&source)
         .expect("import source with distinct master");
     let generated = destination.save_bytes().expect("save generated package");
-
-    // Point one of the imported master's layouts back at the template's master, which is the
-    // shape import de-duplication used to produce.
-    let cross_linked = rewrite_zip_part(
+    rewrite_zip_part(
         generated,
         "ppt/slideLayouts/_rels/slideLayout14.xml.rels",
         |xml| {
@@ -613,16 +662,7 @@ fn validation_rejects_a_layout_owned_by_another_registered_master() {
                 .replace(&xml, "${1}../slideMasters/slideMaster1.xml${2}")
                 .into_owned()
         },
-    );
-
-    let error = Presentation::open_bytes(&cross_linked)
-        .expect("open cross-linked package")
-        .validate()
-        .expect_err("a layout owned by another master must fail validation");
-    assert!(
-        error.to_string().contains("belongs to"),
-        "unexpected validation error: {error}"
-    );
+    )
 }
 
 /// The template with one layout and its master edited: the edit stops that layout

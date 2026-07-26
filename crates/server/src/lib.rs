@@ -19,6 +19,7 @@ use deck_builder::{
 use hmac::{Hmac, Mac};
 use http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, ETAG, SET_COOKIE};
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
+use pptx_template::Presentation;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::Sha256;
@@ -144,6 +145,10 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
         .route(
             "/api/services/:id/revisions/:revision/download",
             get(download_service_revision),
+        )
+        .route(
+            "/api/services/:id/revisions/:revision/snapshot",
+            get(service_revision_snapshot),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_staff))
         .with_state(state.clone());
@@ -644,6 +649,9 @@ async fn generate_service(
         generated_by: session.display_name.clone(),
         expires_at: generated_at + ChronoDuration::days(GENERATED_DECK_RETENTION_DAYS),
         source_revision: service.revision,
+        // Captured before the status change below, so the snapshot is the service as it was
+        // when its slides were built.
+        service: Some(service.clone()),
     };
     put_json(
         state.store.as_ref(),
@@ -707,6 +715,9 @@ struct GeneratedDeckListing {
     expires_at: chrono::DateTime<Utc>,
     source_revision: u64,
     download_url: String,
+    /// Decks generated before the service snapshot was recorded have nothing to show, and the
+    /// history page hides the control rather than offering a link that cannot work.
+    snapshot_url: Option<String>,
 }
 
 async fn generated_decks(
@@ -731,10 +742,13 @@ async fn generated_decks(
             continue;
         }
         let (service, _) = load_service(&state, &metadata.service_id).await?;
+        // The name and date the deck was built with, so renaming a service later does not
+        // rewrite the history of what was already handed out.
+        let snapshot = metadata.service.as_ref();
         generated.push(GeneratedDeckListing {
             service_id: metadata.service_id.clone(),
-            service_name: service.name,
-            service_date: service.date,
+            service_name: snapshot.map_or(service.name, |snapshot| snapshot.name.clone()),
+            service_date: snapshot.map_or(service.date, |snapshot| snapshot.date),
             revision: metadata.revision,
             generated_at: metadata.generated_at,
             generated_by: metadata.generated_by,
@@ -744,6 +758,12 @@ async fn generated_decks(
                 "/api/services/{}/revisions/{}/download",
                 metadata.service_id, metadata.revision
             ),
+            snapshot_url: snapshot.map(|_| {
+                format!(
+                    "/api/services/{}/revisions/{}/snapshot",
+                    metadata.service_id, metadata.revision
+                )
+            }),
         });
     }
     generated.sort_by(|left, right| {
@@ -756,22 +776,96 @@ async fn generated_decks(
     Ok(Json(generated))
 }
 
+/// The order of service a generated deck was built from. The live service keeps being edited
+/// after a deck is handed out, so this is the only record of what actually went on the screen.
+async fn service_revision_snapshot(
+    State(state): State<AppState>,
+    Path((id, revision)): Path<(String, u64)>,
+) -> Result<Json<ServiceRecord>, AppError> {
+    let metadata = load_generated_deck(&state, &id, revision).await?;
+    metadata.service.map(Json).ok_or_else(|| {
+        AppError::new(
+            StatusCode::NOT_FOUND,
+            "this PowerPoint was generated before the service was recorded with it",
+        )
+    })
+}
+
+async fn load_generated_deck(
+    state: &AppState,
+    id: &str,
+    revision: u64,
+) -> Result<GeneratedDeckVersion, AppError> {
+    let object = state
+        .store
+        .get(&format!("entities/services/{id}/revisions/{revision}.json"))
+        .await?;
+    let metadata: GeneratedDeckVersion = serde_json::from_slice(&object.bytes)?;
+    if metadata.service_id != id || metadata.revision != revision {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "record not found"));
+    }
+    Ok(metadata)
+}
+
+/// Decks generated before slide layout ownership was enforced are still in storage, and
+/// PowerPoint refuses them outright rather than offering to repair them. Mend one on its way out
+/// and write the healed deck back, so the file is fixed for good rather than on every download.
+///
+/// A deck that cannot be mended is served exactly as stored: the staff member gets the same
+/// broken file they had before rather than an error, and nothing in storage is disturbed.
+async fn heal_stored_deck(state: &AppState, object_key: &str, bytes: Vec<u8>) -> Vec<u8> {
+    let Ok(mut deck) = Presentation::open_bytes(&bytes) else {
+        return bytes;
+    };
+    if deck.validate().is_ok() {
+        return bytes;
+    }
+    match deck.repair() {
+        Ok(true) => {}
+        Ok(false) => return bytes,
+        Err(error) => {
+            eprintln!("could not repair stored deck {object_key}: {error}");
+            return bytes;
+        }
+    }
+    if let Err(error) = deck.validate() {
+        eprintln!("stored deck {object_key} is still invalid after repair: {error}");
+        return bytes;
+    }
+    let healed = match deck.save_bytes() {
+        Ok(healed) => healed,
+        Err(error) => {
+            eprintln!("repaired deck {object_key} could not be saved: {error}");
+            return bytes;
+        }
+    };
+
+    // Writing back is a convenience, not a precondition for serving the deck.
+    if let Err(error) = state
+        .store
+        .put(
+            object_key,
+            healed.clone(),
+            PPTX_CONTENT_TYPE,
+            PutCondition::Any,
+        )
+        .await
+    {
+        eprintln!("healed deck {object_key} could not be written back: {error}");
+    }
+    healed
+}
+
 async fn download_service_revision(
     State(state): State<AppState>,
     Path((id, revision)): Path<(String, u64)>,
 ) -> Result<Response, AppError> {
     let (service, _) = load_service(&state, &id).await?;
-    let metadata_object = state
-        .store
-        .get(&format!("entities/services/{id}/revisions/{revision}.json"))
-        .await?;
-    let metadata: GeneratedDeckVersion = serde_json::from_slice(&metadata_object.bytes)?;
-    if metadata.service_id != id || metadata.revision != revision {
-        return Err(AppError::new(StatusCode::NOT_FOUND, "record not found"));
-    }
+    let metadata = load_generated_deck(&state, &id, revision).await?;
     let deck = state.store.get(&metadata.object_key).await?;
+    let bytes = heal_stored_deck(&state, &metadata.object_key, deck.bytes).await;
 
-    let mut response = Response::new(Body::from(deck.bytes));
+    let mut response = Response::new(Body::from(bytes));
     response
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static(PPTX_CONTENT_TYPE));

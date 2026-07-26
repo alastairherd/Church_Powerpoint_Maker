@@ -616,6 +616,161 @@ async fn generates_an_immutable_revision_without_locking() {
     Presentation::open_bytes(&body).unwrap().validate().unwrap();
 }
 
+/// The live service keeps being edited after a deck is handed out, so the history has to keep
+/// its own copy of what each PowerPoint was built from.
+#[tokio::test]
+async fn generated_history_records_the_service_each_deck_was_built_from() {
+    let (app, cookie, csrf) = authenticated().await;
+    let id = create_service(&app, &cookie, &csrf, "Morning service").await;
+    generate(&app, &cookie, &csrf, &id).await;
+
+    let listing = get_json(&app, &cookie, "/api/generated").await;
+    let snapshot_url = listing[0]["snapshot_url"].as_str().expect("snapshot url");
+    assert_eq!(
+        snapshot_url,
+        format!("/api/services/{id}/revisions/1/snapshot")
+    );
+
+    let snapshot = get_json(&app, &cookie, snapshot_url).await;
+    assert_eq!(snapshot["id"], id.as_str());
+    assert_eq!(snapshot["name"], "Morning service");
+    assert_eq!(snapshot["preset"], "am");
+    let components = snapshot["components"].as_array().expect("components");
+    assert!(
+        !components.is_empty(),
+        "the snapshot keeps the order of service, not just its name"
+    );
+    assert!(components
+        .iter()
+        .all(|component| component["type"].is_string()));
+
+    // Renaming the service afterwards must not rewrite what the history says was generated.
+    let mut service = get_json(&app, &cookie, &format!("/api/services/{id}")).await;
+    service["name"] = serde_json::json!("Renamed service");
+    let renamed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/services/{id}"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&service).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        renamed.status().is_success(),
+        "rename failed: {}",
+        renamed.status()
+    );
+
+    let listing = get_json(&app, &cookie, "/api/generated").await;
+    assert_eq!(
+        listing[0]["service_name"], "Morning service",
+        "history shows the name the deck was generated under"
+    );
+}
+
+/// Downloading runs every stored deck past validation so broken ones can be mended. A deck that
+/// was fine to begin with must come back exactly as it was stored, not silently rewritten.
+/// Repairing a genuinely broken package is covered in `pptx-template`.
+#[tokio::test]
+async fn downloading_a_sound_deck_returns_it_untouched() {
+    let (app, cookie, csrf) = authenticated().await;
+    let id = create_service(&app, &cookie, &csrf, "Morning service").await;
+    generate(&app, &cookie, &csrf, &id).await;
+
+    let first = download(&app, &cookie, &id).await;
+    Presentation::open_bytes(&first)
+        .unwrap()
+        .validate()
+        .unwrap();
+    let second = download(&app, &cookie, &id).await;
+    assert_eq!(
+        first, second,
+        "a sound deck must not be rewritten by being downloaded"
+    );
+}
+
+async fn create_service(app: &axum::Router, cookie: &str, csrf: &str, name: &str) -> String {
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/services")
+                .header("cookie", cookie)
+                .header("x-csrf-token", csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"name":"{name}","date":"2026-07-12","preset":"am"}}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let body = to_bytes(created.into_body(), usize::MAX).await.unwrap();
+    let service: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    service["id"].as_str().unwrap().to_string()
+}
+
+async fn generate(app: &axum::Router, cookie: &str, csrf: &str, id: &str) {
+    let generated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/services/{id}/generate"))
+                .header("cookie", cookie)
+                .header("x-csrf-token", csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(generated.status(), StatusCode::OK);
+}
+
+async fn download(app: &axum::Router, cookie: &str, id: &str) -> Vec<u8> {
+    let downloaded = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/services/{id}/revisions/1/download"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(downloaded.status(), StatusCode::OK);
+    to_bytes(downloaded.into_body(), usize::MAX)
+        .await
+        .unwrap()
+        .to_vec()
+}
+
+async fn get_json(app: &axum::Router, cookie: &str, uri: &str) -> serde_json::Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "GET {uri}");
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
 const SONG_POWERPOINT: &[u8] = include_bytes!("../../deck-builder/assets/template.pptx");
 
 #[tokio::test]

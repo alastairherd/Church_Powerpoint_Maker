@@ -928,6 +928,53 @@ impl Presentation {
         Ok(())
     }
 
+    /// Repairs a package whose masters list slide layouts they do not own, which is the shape
+    /// decks generated before that defect was fixed still have in storage. PowerPoint refuses
+    /// those outright, so healing one is the only way its slides can be recovered.
+    ///
+    /// Returns whether anything was changed. Slide, media and theme parts are untouched, so a
+    /// repaired deck keeps the content it was generated with.
+    pub fn repair(&mut self) -> Result<bool> {
+        let mut changed = false;
+        for master in self.registered_slide_masters()? {
+            changed |= self.give_master_private_layouts(&master)?;
+        }
+        Ok(changed)
+    }
+
+    fn registered_slide_masters(&self) -> Result<Vec<String>> {
+        let presentation = self.part_string(PRESENTATION)?;
+        let pres_rels = self.part_string(PRESENTATION_RELS)?;
+        let targets = relationship_tags(&pres_rels)
+            .into_iter()
+            .filter(|relationship| {
+                attr(relationship, "Type").is_some_and(|value| value.ends_with("/slideMaster"))
+            })
+            .filter_map(|relationship| {
+                let rid = attr(&relationship, "Id")?;
+                let target = attr(&relationship, "Target")?;
+                Some((rid, target))
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let entries =
+            Regex::new(r#"<p:sldMasterId\b[^>]*/>"#).expect("valid slide master entry regex");
+        let mut masters = Vec::new();
+        for entry in entries.find_iter(&presentation) {
+            let Some(rid) = attr(entry.as_str(), "r:id") else {
+                continue;
+            };
+            let Some(target) = targets.get(&rid) else {
+                continue;
+            };
+            let master = resolve_part_target(PRESENTATION, target)?;
+            if !masters.contains(&master) {
+                masters.push(master);
+            }
+        }
+        Ok(masters)
+    }
+
     fn validate_notes_master_reference(&self, pres_rels: &str) -> Result<()> {
         let relationship_ids = relationship_tags(pres_rels)
             .into_iter()
@@ -1368,7 +1415,8 @@ impl Presentation {
     /// onto the destination master's layout parts while the master itself, differing by so much
     /// as one `p:sldLayoutId` entry, is still imported as a new master — leaving the new master
     /// listing layouts that belong to the old one. PowerPoint refuses such a package outright.
-    fn give_master_private_layouts(&mut self, master_part: &str) -> Result<()> {
+    /// Returns whether the master had to be given any private copies.
+    fn give_master_private_layouts(&mut self, master_part: &str) -> Result<bool> {
         let relationships_name = relationships_part(master_part);
         let relationships_xml = self.part_string(&relationships_name)?;
         let mut rewritten = Vec::new();
@@ -1443,7 +1491,7 @@ impl Presentation {
                 .into_bytes(),
             );
         }
-        Ok(())
+        Ok(changed)
     }
 
     fn copy_content_type(&mut self, source_part: &str, destination_part: &str) -> Result<()> {
