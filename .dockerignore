@@ -1,12 +1,10 @@
 target/
-__pycache__/
-*.pyc
+node_modules/
 .git/
 .agents/
 .codex/
-.ipynb_checkpoints/
+.opencode/
 example-pptx/
-legacy/
 out.pptx
 .env
 .env.local

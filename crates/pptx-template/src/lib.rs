@@ -253,8 +253,12 @@ impl Presentation {
         let size = self.slide_size()?;
         if size != expected_size {
             return Err(Error::InvalidPackage(format!(
-                "incompatible slide dimensions {} × {}; expected {} × {}",
-                size.0, size.1, expected_size.0, expected_size.1
+                "these slides are {} and the service template is {}. \
+                 In PowerPoint choose Design → Slide Size → Custom Slide Size, set the deck to {}, \
+                 then check each slide still looks right before uploading it again",
+                describe_slide_size(size),
+                describe_slide_size(expected_size),
+                describe_slide_size(expected_size),
             )));
         }
         if self.slides.is_empty() {
@@ -924,6 +928,53 @@ impl Presentation {
         Ok(())
     }
 
+    /// Repairs a package whose masters list slide layouts they do not own, which is the shape
+    /// decks generated before that defect was fixed still have in storage. PowerPoint refuses
+    /// those outright, so healing one is the only way its slides can be recovered.
+    ///
+    /// Returns whether anything was changed. Slide, media and theme parts are untouched, so a
+    /// repaired deck keeps the content it was generated with.
+    pub fn repair(&mut self) -> Result<bool> {
+        let mut changed = false;
+        for master in self.registered_slide_masters()? {
+            changed |= self.give_master_private_layouts(&master)?;
+        }
+        Ok(changed)
+    }
+
+    fn registered_slide_masters(&self) -> Result<Vec<String>> {
+        let presentation = self.part_string(PRESENTATION)?;
+        let pres_rels = self.part_string(PRESENTATION_RELS)?;
+        let targets = relationship_tags(&pres_rels)
+            .into_iter()
+            .filter(|relationship| {
+                attr(relationship, "Type").is_some_and(|value| value.ends_with("/slideMaster"))
+            })
+            .filter_map(|relationship| {
+                let rid = attr(&relationship, "Id")?;
+                let target = attr(&relationship, "Target")?;
+                Some((rid, target))
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let entries =
+            Regex::new(r#"<p:sldMasterId\b[^>]*/>"#).expect("valid slide master entry regex");
+        let mut masters = Vec::new();
+        for entry in entries.find_iter(&presentation) {
+            let Some(rid) = attr(entry.as_str(), "r:id") else {
+                continue;
+            };
+            let Some(target) = targets.get(&rid) else {
+                continue;
+            };
+            let master = resolve_part_target(PRESENTATION, target)?;
+            if !masters.contains(&master) {
+                masters.push(master);
+            }
+        }
+        Ok(masters)
+    }
+
     fn validate_notes_master_reference(&self, pres_rels: &str) -> Result<()> {
         let relationship_ids = relationship_tags(pres_rels)
             .into_iter()
@@ -1026,8 +1077,66 @@ impl Presentation {
                 }
             }
         }
+        self.validate_layout_ownership(&entry_targets)?;
         self.registered_master_and_layout_ids()?;
         Ok(())
+    }
+
+    /// PowerPoint requires a slide layout to belong to exactly one master: the layout a master
+    /// lists must point back at that same master. Import de-duplication can otherwise collapse an
+    /// incoming layout onto an identical layout owned by another master, which leaves a package
+    /// every schema validator accepts and PowerPoint refuses to open.
+    fn validate_layout_ownership(&self, masters: &HashSet<String>) -> Result<()> {
+        let mut owners: BTreeMap<String, String> = BTreeMap::new();
+        for master in masters {
+            let relationships = self.part_string(&relationships_part(master))?;
+            for relationship in relationship_tags(&relationships) {
+                if !attr(&relationship, "Type").is_some_and(|value| value.ends_with("/slideLayout"))
+                {
+                    continue;
+                }
+                let target = attr(&relationship, "Target").ok_or_else(|| {
+                    Error::InvalidPackage(format!("{master} layout relationship has no target"))
+                })?;
+                let layout = resolve_part_target(master, &target)?;
+                if let Some(other) = owners.insert(layout.clone(), master.clone()) {
+                    return Err(Error::InvalidPackage(format!(
+                        "slide masters {other} and {master} both list layout {layout}"
+                    )));
+                }
+                for backlink in self.layout_master_backlinks(&layout)? {
+                    if &backlink != master {
+                        return Err(Error::InvalidPackage(format!(
+                            "layout {layout} is listed by {master} but belongs to {backlink}"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn layout_master_backlinks(&self, layout_part: &str) -> Result<Vec<String>> {
+        let relationships_name = relationships_part(layout_part);
+        let Some(bytes) = self.files.get(&relationships_name) else {
+            return Ok(Vec::new());
+        };
+        let xml = String::from_utf8(bytes.clone())
+            .map_err(|_| Error::InvalidPackage(format!("{relationships_name} is not utf-8")))?;
+        relationship_tags(&xml)
+            .into_iter()
+            .filter(|relationship| {
+                attr(relationship, "Type").is_some_and(|value| value.ends_with("/slideMaster"))
+            })
+            .map(|relationship| {
+                let target = attr(&relationship, "Target").ok_or_else(|| {
+                    Error::InvalidPackage(format!(
+                        "{layout_part} master relationship has no target"
+                    ))
+                })?;
+                resolve_part_target(layout_part, &target)
+            })
+            .collect()
     }
 
     fn registered_master_and_layout_ids(&self) -> Result<HashSet<u32>> {
@@ -1275,6 +1384,7 @@ impl Presentation {
             return Ok(());
         }
 
+        self.give_master_private_layouts(master_part)?;
         let mut used_ids = self.normalize_slide_master_layout_ids(master_part)?;
         let id = self.allocate_master_or_layout_id(&mut used_ids)?;
         let master_rid = if let Some(rid) = master_rid {
@@ -1294,6 +1404,114 @@ impl Presentation {
         insert_before(&mut presentation, "</p:sldMasterIdLst>", &entry)?;
         self.files
             .insert(PRESENTATION.into(), presentation.into_bytes());
+        Ok(())
+    }
+
+    /// Copies any layout this master lists but does not own, so the master gets a private copy
+    /// backlinking to itself.
+    ///
+    /// Import de-duplication matches a layout on its contents alone, so a song deck built from
+    /// the service template carries layouts byte-identical to the destination's. Those collapse
+    /// onto the destination master's layout parts while the master itself, differing by so much
+    /// as one `p:sldLayoutId` entry, is still imported as a new master — leaving the new master
+    /// listing layouts that belong to the old one. PowerPoint refuses such a package outright.
+    /// Returns whether the master had to be given any private copies.
+    fn give_master_private_layouts(&mut self, master_part: &str) -> Result<bool> {
+        let relationships_name = relationships_part(master_part);
+        let relationships_xml = self.part_string(&relationships_name)?;
+        let mut rewritten = Vec::new();
+        let mut changed = false;
+
+        for relationship in relationship_tags(&relationships_xml) {
+            let is_layout =
+                attr(&relationship, "Type").is_some_and(|value| value.ends_with("/slideLayout"));
+            if !is_layout {
+                rewritten.push(relationship);
+                continue;
+            }
+            let target = attr(&relationship, "Target").ok_or_else(|| {
+                Error::InvalidPackage(format!("{master_part} layout relationship has no target"))
+            })?;
+            let layout = resolve_part_target(master_part, &target)?;
+            let backlinks = self.layout_master_backlinks(&layout)?;
+            if backlinks.iter().all(|backlink| backlink == master_part) {
+                rewritten.push(relationship);
+                continue;
+            }
+
+            let private = self.allocate_import_part(&layout, 1);
+            let layout_bytes = self
+                .files
+                .get(&layout)
+                .ok_or_else(|| Error::MissingPart(layout.clone()))?
+                .clone();
+            self.files.insert(private.clone(), layout_bytes);
+            self.copy_content_type(&layout, &private)?;
+
+            // The copy keeps the original's relationships, with its master pointed at this one.
+            let layout_relationships = self.part_string(&relationships_part(&layout))?;
+            let mut copied = Vec::new();
+            for layout_relationship in relationship_tags(&layout_relationships) {
+                let is_master = attr(&layout_relationship, "Type")
+                    .is_some_and(|value| value.ends_with("/slideMaster"));
+                if is_master {
+                    let master_target = relative_part_target(&private, master_part);
+                    copied.push(replace_xml_attr(
+                        &layout_relationship,
+                        "Target",
+                        &master_target,
+                    ));
+                    continue;
+                }
+                // Targets are relative to the part that owns them, and the copy sits alongside
+                // the original, so they carry over untouched.
+                copied.push(layout_relationship);
+            }
+            self.files.insert(
+                relationships_part(&private),
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{}</Relationships>"#,
+                    copied.join("")
+                )
+                .into_bytes(),
+            );
+
+            let new_target = relative_part_target(master_part, &private);
+            rewritten.push(replace_xml_attr(&relationship, "Target", &new_target));
+            changed = true;
+        }
+
+        if changed {
+            self.files.insert(
+                relationships_name,
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{}</Relationships>"#,
+                    rewritten.join("")
+                )
+                .into_bytes(),
+            );
+        }
+        Ok(changed)
+    }
+
+    fn copy_content_type(&mut self, source_part: &str, destination_part: &str) -> Result<()> {
+        let mut xml = self.part_string(CONTENT_TYPES)?;
+        let destination_name = format!("/{destination_part}");
+        if xml.contains(&format!("PartName=\"{destination_name}\"")) {
+            return Ok(());
+        }
+        let source_name = format!("/{source_part}");
+        let overrides = Regex::new(r#"<Override\b[^>]*/>"#).expect("valid override regex");
+        let source_override = overrides
+            .find_iter(&xml)
+            .map(|entry| entry.as_str().to_string())
+            .find(|entry| attr(entry, "PartName").as_deref() == Some(source_name.as_str()))
+            .ok_or_else(|| {
+                Error::InvalidPackage(format!("no content type override for {source_part}"))
+            })?;
+        let copied = replace_xml_attr(&source_override, "PartName", &destination_name);
+        insert_before(&mut xml, "</Types>", &copied)?;
+        self.files.insert(CONTENT_TYPES.into(), xml.into_bytes());
         Ok(())
     }
 
@@ -1478,6 +1696,25 @@ impl<'a> SlideMut<'a> {
             shape_name: name.to_string(),
         })
     }
+
+    pub fn hide_master_graphics(self) -> Result<()> {
+        let part = self.presentation.slides[self.index].part.clone();
+        let mut xml = self.presentation.part_string(&part)?;
+        let flag_re =
+            Regex::new(r#"showMasterSp="[^"]*""#).expect("valid master graphics flag regex");
+        if let Some(existing) = flag_re.find(&xml) {
+            let range = existing.range();
+            xml.replace_range(range, r#"showMasterSp="0""#);
+        } else if let Some(position) = xml.find("<p:sld ") {
+            xml.insert_str(position + "<p:sld ".len(), r#"showMasterSp="0" "#);
+        } else {
+            return Err(Error::InvalidPackage(format!(
+                "{part} has no p:sld root element"
+            )));
+        }
+        self.presentation.files.insert(part, xml.into_bytes());
+        Ok(())
+    }
 }
 
 pub struct ShapeMut<'a> {
@@ -1487,6 +1724,26 @@ pub struct ShapeMut<'a> {
 }
 
 impl ShapeMut<'_> {
+    pub fn position(&self) -> Result<(u64, u64, u64, u64)> {
+        let part = &self.presentation.slides[self.slide_index].part;
+        let xml = self.presentation.part_string(part)?;
+        let (_, _, block) = find_shape_block(&xml, &self.shape_name)?;
+        let off_re = Regex::new(r#"<a:off x="(\d+)" y="(\d+)"/>"#).expect("valid offset regex");
+        let ext_re = Regex::new(r#"<a:ext cx="(\d+)" cy="(\d+)"/>"#).expect("valid extent regex");
+        let off = off_re.captures(&block).ok_or_else(|| {
+            Error::InvalidPackage(format!("shape {} has no offset", self.shape_name))
+        })?;
+        let ext = ext_re.captures(&block).ok_or_else(|| {
+            Error::InvalidPackage(format!("shape {} has no extent", self.shape_name))
+        })?;
+        Ok((
+            off[1].parse().unwrap_or(0),
+            off[2].parse().unwrap_or(0),
+            ext[1].parse().unwrap_or(0),
+            ext[2].parse().unwrap_or(0),
+        ))
+    }
+
     pub fn set_text(self, text: &str) -> Result<()> {
         self.set_rich_text(&[Run::plain(text)])
     }
@@ -1537,6 +1794,30 @@ impl PlaceholderMut<'_> {
         self.presentation.files.insert(part, xml.into_bytes());
         Ok(())
     }
+}
+
+/// Describes a slide size the way PowerPoint's own Slide Size dialog does, so a rejection message
+/// tells someone what to change rather than quoting raw EMU at them.
+fn describe_slide_size((width, height): (u64, u64)) -> String {
+    const EMU_PER_INCH: f64 = 914_400.0;
+    if height == 0 {
+        return format!("{width} × {height}");
+    }
+    let inches = (width as f64 / EMU_PER_INCH, height as f64 / EMU_PER_INCH);
+    // The TWPC template is 1.3335:1 rather than exactly 4:3, and decks saved by different
+    // PowerPoint versions vary in the last digits too, so these are matched loosely.
+    let aspect = width as f64 / height as f64;
+    let ratio = [
+        (4.0 / 3.0, "4:3"),
+        (16.0 / 9.0, "16:9 widescreen"),
+        (16.0 / 10.0, "16:10 widescreen"),
+        (3.0 / 2.0, "3:2"),
+    ]
+    .into_iter()
+    .find(|(target, _)| (aspect - target).abs() < 0.01)
+    .map(|(_, name)| name.to_string())
+    .unwrap_or_else(|| format!("{aspect:.2}:1"));
+    format!("{ratio} ({:.2} × {:.2} inches)", inches.0, inches.1)
 }
 
 fn utf8_part(files: &BTreeMap<String, Vec<u8>>, part: &str) -> Result<String> {

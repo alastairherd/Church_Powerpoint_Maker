@@ -4,6 +4,13 @@ const results = document.getElementById('library-results');
 const preview = document.getElementById('song-preview');
 const count = document.getElementById('song-count');
 const toast = document.getElementById('toast');
+const addDialog = document.getElementById('add-song-dialog');
+const addForm = document.getElementById('add-song-form');
+const addError = document.getElementById('add-song-error');
+const addSubmit = document.getElementById('add-song-submit');
+const replaceInput = document.getElementById('replace-song-file');
+const PPTX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 let selectedId = null;
 let searchTimer = null;
 let requestNumber = 0;
@@ -29,6 +36,33 @@ function showToast(message) {
 
 function friendlyRights(value) {
   return ({ public_domain: 'Public domain', ccli_covered: 'CCLI covered', direct_permission: 'Direct permission', unknown: 'Rights unknown' })[value] || value;
+}
+
+export function parseAliases(value) {
+  return (value || '').split(',').map(alias => alias.trim()).filter(Boolean);
+}
+
+/** Returns a message for the mistakes worth catching before we spend an upload, or null. */
+export function describeFileProblem(file) {
+  if (!file) return 'Choose a PowerPoint file.';
+  if (!file.name.toLowerCase().endsWith('.pptx')) return 'The file must be a PowerPoint .pptx, not a .ppt or an exported PDF.';
+  if (!file.size) return 'That file is empty.';
+  if (file.size > MAX_UPLOAD_BYTES) return 'That PowerPoint is larger than 25 MB. Compress its images and try again.';
+  return null;
+}
+
+/** Header values must be latin-1, so smart quotes and the like are dropped before sending. */
+export function headerSafeFilename(name) {
+  return (name || '').replace(/[^\x20-\x7e]/g, '').slice(0, 180) || 'song.pptx';
+}
+
+async function uploadPowerPoint(songId, file) {
+  const response = await request(`/api/songs/${encodeURIComponent(songId)}/upload`, {
+    method: 'POST',
+    headers: { 'content-type': PPTX_CONTENT_TYPE, 'x-source-filename': headerSafeFilename(file.name) },
+    body: file
+  });
+  return response.json();
 }
 
 function renderSongs(songs) {
@@ -90,8 +124,16 @@ function renderPreview(data) {
   const copy = document.createElement('div');
   const title = document.createElement('h2'); title.textContent = data.song.title;
   const detail = document.createElement('p');
-  detail.textContent = [data.song.variant_label, `Version ${data.song.current_version}`, `${data.song.slide_count} slides`].filter(Boolean).join(' · ');
-  copy.append(title, detail); header.append(copy); preview.append(header);
+  detail.textContent = data.song.current_version
+    ? [data.song.variant_label, `Version ${data.song.current_version}`, `${data.song.slide_count} slides`].filter(Boolean).join(' · ')
+    : [data.song.variant_label, 'Awaiting its PowerPoint'].filter(Boolean).join(' · ');
+  copy.append(title, detail);
+  const replace = document.createElement('button');
+  replace.type = 'button';
+  replace.className = 'button button-secondary';
+  replace.textContent = data.song.current_version ? 'Upload new version' : 'Upload PowerPoint';
+  replace.addEventListener('click', () => { replaceInput.value = ''; replaceInput.click(); });
+  header.append(copy, replace); preview.append(header);
 
   const metadata = document.createElement('dl'); metadata.className = 'song-metadata';
   [['Rights', friendlyRights(data.song.rights_status)], ['Author / owner', data.song.author_owner || 'Needs review'], ['CCLI song number', data.song.ccli_song_number || 'Not recorded']].forEach(([label, value]) => {
@@ -100,6 +142,14 @@ function renderPreview(data) {
     metadata.append(term, description);
   });
   preview.append(metadata);
+
+  if (!data.slides.length) {
+    const empty = document.createElement('p');
+    empty.className = 'field-note';
+    empty.textContent = 'No slides stored yet. Upload the PowerPoint to finish adding this song.';
+    preview.append(empty);
+    return;
+  }
 
   const slideHeading = document.createElement('h3'); slideHeading.textContent = 'Extracted slide text'; preview.append(slideHeading);
   const slides = document.createElement('ol'); slides.className = 'preview-slides';
@@ -127,6 +177,89 @@ async function loadSongs(query = '') {
     showToast(error.message);
   }
 }
+
+async function showPreview(songId) {
+  selectedId = songId;
+  const response = await request(`/api/songs/${encodeURIComponent(songId)}/preview`);
+  renderPreview(await response.json());
+}
+
+function setAddError(message) {
+  addError.textContent = message || '';
+  addError.hidden = !message;
+}
+
+async function addSong(event) {
+  event.preventDefault();
+  const file = document.getElementById('song-file').files[0];
+  const title = document.getElementById('song-title').value.trim();
+  if (!title) return setAddError('Give the song a title.');
+  const problem = describeFileProblem(file);
+  if (problem) return setAddError(problem);
+
+  setAddError('');
+  addSubmit.disabled = true;
+  let created = null;
+  try {
+    const response = await request('/api/songs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        aliases: parseAliases(document.getElementById('song-aliases').value),
+        variant_label: document.getElementById('song-variant').value.trim(),
+        author_owner: document.getElementById('song-author').value.trim(),
+        rights_status: document.getElementById('song-rights').value,
+        ccli_song_number: document.getElementById('song-ccli').value.trim() || null,
+        lyric_slides: [],
+        credits: ''
+      })
+    });
+    created = await response.json();
+    await uploadPowerPoint(created.id, file);
+  } catch (error) {
+    // A failed upload leaves the catalogue entry behind, so say so rather than let the
+    // song reappear as an empty row with no explanation.
+    setAddError(created
+      ? `${error.message} "${title}" was added to the catalogue without slides — select it and upload the PowerPoint again.`
+      : error.message);
+    addSubmit.disabled = false;
+    if (created) await loadSongs(search.value.trim());
+    return;
+  }
+  addSubmit.disabled = false;
+  addForm.reset();
+  addDialog.close();
+  showToast(`"${title}" added to the library.`);
+  selectedId = created.id;
+  await loadSongs(search.value.trim());
+  await showPreview(created.id).catch(() => {});
+}
+
+document.getElementById('add-song').addEventListener('click', () => {
+  addForm.reset();
+  setAddError('');
+  addDialog.showModal();
+});
+addForm.addEventListener('submit', addSong);
+addForm.querySelectorAll('[data-close]').forEach(button => {
+  button.addEventListener('click', () => addDialog.close());
+});
+
+replaceInput.addEventListener('change', async () => {
+  const file = replaceInput.files[0];
+  if (!file || !selectedId) return;
+  const problem = describeFileProblem(file);
+  if (problem) return showToast(problem);
+  try {
+    const song = await uploadPowerPoint(selectedId, file);
+    showToast(`"${song.title}" updated to version ${song.current_version}.`);
+    await loadSongs(search.value.trim());
+    await showPreview(song.id);
+  } catch (error) {
+    showToast(error.message);
+  }
+});
 
 search.addEventListener('input', () => {
   clearTimeout(searchTimer);

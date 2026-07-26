@@ -522,6 +522,63 @@ async fn blank_teaching_renders_a_placeholder_but_invalid_automatic_loading_stil
     assert!(text.contains("This Sabbath is then kept holy unto the Lord"));
 }
 
+#[tokio::test]
+async fn blank_psalm_slide_breaks_are_skipped() {
+    let mut service = ServiceRecord::new(
+        "service-blank-psalm",
+        "Blank psalm break",
+        NaiveDate::from_ymd_opt(2026, 7, 26).unwrap(),
+        ServicePreset::Am,
+        "Alastair",
+    );
+    service.components = vec![ServiceComponent::Psalm {
+        id: "psalm".into(),
+        heading: "Psalm".into(),
+        reference: "Psalm 23:1–6".into(),
+        show_verse_numbers: true,
+        tune: None,
+        slide_breaks: vec!["The LORD's my shepherd".into(), String::new(), "  ".into()],
+    }];
+
+    let bytes = build_deck(&service, &MockSources, "522221")
+        .await
+        .expect("psalm with blank breaks builds");
+    let pres = Presentation::open_bytes(&bytes).expect("generated deck opens");
+    assert_eq!(pres.slide_count(), 1);
+    let text = pres.slide_text(0).unwrap();
+    assert!(text.contains("The LORD's my shepherd"));
+    assert!(text.contains("Sing Psalms"));
+}
+
+#[tokio::test]
+async fn crowded_slides_hide_the_master_logo() {
+    let mut service = ServiceRecord::new(
+        "service-crowded",
+        "Crowded slide",
+        NaiveDate::from_ymd_opt(2026, 7, 26).unwrap(),
+        ServicePreset::Am,
+        "Alastair",
+    );
+    let long_verse = (1..=14)
+        .map(|line| format!("Line {line} of a very long lyric verse"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    service.components = vec![ServiceComponent::Song {
+        id: "song".into(),
+        title: "Crowded song".into(),
+        song: None,
+        lyric_slides: vec![long_verse, "A short verse\nof two lines".into()],
+        credits: String::new(),
+    }];
+
+    let bytes = build_deck(&service, &MockSources, "522221")
+        .await
+        .expect("crowded song builds");
+    let pres = Presentation::open_bytes(&bytes).expect("generated deck opens");
+    assert!(pres.slide_xml(0).unwrap().contains("showMasterSp=\"0\""));
+    assert!(!pres.slide_xml(1).unwrap().contains("showMasterSp=\"0\""));
+}
+
 #[test]
 fn embedded_sources_resolve_catechism_psalm_and_fixed_component() {
     let fixed = FixedComponent::find("confession").expect("confession exists");
@@ -568,6 +625,53 @@ fn embedded_sources_resolve_catechism_psalm_and_fixed_component() {
             1
         );
     }
+}
+
+/// The confession and assurance used in ordinary services must match the wording baked into
+/// `template.pptx` slides 23-26, which the Lord's Supper presets clone verbatim. Keeping the two
+/// paths in step is the whole point of these assertions.
+#[test]
+fn confession_and_assurance_match_the_template_wording() {
+    let template = Presentation::open_bytes(include_bytes!("../assets/template.pptx"))
+        .expect("template opens");
+
+    let confession = FixedComponent::find("confession").expect("confession exists");
+    assert_eq!(confession.speaker, "All.");
+    assert_eq!(confession.slides.len(), 3);
+    assert!(confession.slides[0]
+        .starts_with("Almighty God, Father of our Lord Jesus Christ, Maker of all things,"));
+    assert!(confession.slides[1].starts_with("We do earnestly repent,"));
+    assert!(confession.slides[2].ends_with("Through Jesus Christ our Lord.  Amen."));
+
+    let assurance = FixedComponent::find("assurance").expect("assurance exists");
+    assert_eq!(assurance.speaker, "Minister.");
+    assert_eq!(assurance.slides.len(), 1);
+    assert!(assurance.slides[0].starts_with("Almighty God, our heavenly Father,"));
+
+    for (key, template_slides) in [
+        ("confession", [23, 24, 25].as_slice()),
+        ("assurance", &[26]),
+    ] {
+        let component = FixedComponent::find(key).expect("component exists");
+        for (page, &template_slide) in component.slides.iter().zip(template_slides) {
+            let template_text = template.slide_text(template_slide).unwrap();
+            for line in page.split('\n') {
+                // The template's assurance slide ends "Amen" without a full stop; the service
+                // decks the church actually uses have "Amen." and the JSON follows those, so
+                // trailing punctuation is not compared.
+                let line = normalise_whitespace(line);
+                let line = line.trim_end_matches('.');
+                assert!(
+                    normalise_whitespace(&template_text).contains(line),
+                    "{key}: line {line:?} is missing from template slide {template_slide}"
+                );
+            }
+        }
+    }
+}
+
+fn normalise_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn xml_is_parseable(xml: &str) -> bool {
@@ -697,7 +801,7 @@ async fn ordinary_blank_liturgy_uses_fixed_component_renderer() {
         .expect("ordinary deck builds");
     let generated = Presentation::open_bytes(&bytes).expect("generated deck opens");
 
-    assert_eq!(generated.slide_count(), 2);
+    assert_eq!(generated.slide_count(), 3);
     assert_eq!(
         calls.lock().unwrap().clone(),
         vec!["confession".to_string()]

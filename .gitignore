@@ -1,11 +1,15 @@
-__pycache__/
-*.pyc
+target/
+node_modules/
 *.pptx
 !crates/deck-builder/assets/template.pptx
-!legacy/python/*.pptx
 example-pptx/
-.ipynb_checkpoints/
-target/
 .env
 .env.local
+.env.example
 envs.txt
+
+# Local AI agent tooling, not part of the project
+.opencode/
+opencode.json
+compat/
+docs/superpowers/

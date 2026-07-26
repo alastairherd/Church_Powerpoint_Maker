@@ -1,68 +1,89 @@
 # TWPC Service Builder
 
-The supported application is an authenticated Rust/Axum website for preparing and generating TWPC service PowerPoints. Staff choose a service preset, arrange and edit its components, review warnings, and generate immutable `.pptx` revisions. The old Python generator is retained for reference only in [`legacy/python/`](legacy/python/).
+A web app for assembling a church order of service and generating the PowerPoint
+deck for the Sunday screens.
 
-## What is implemented
+Staff pick a preset (morning, traditional evening, praise and worship, or either
+Lord's Supper order), then fill in the week's specifics: hymns from the song
+library, a psalm, scripture readings, notices, a catechism or confession reading,
+and the sermon details. Liturgy that does not change week to week — the
+confession, the assurance of forgiveness, the Lord's Prayer, the creed — is filled
+in automatically. Pressing Generate produces a `.pptx` built from the
+TWPC-branded template, ready to open and project.
 
-- AM, traditional PM, praise-and-worship PM, AM Lord's Supper, and PM Lord's Supper presets based on the supplied services
-- Ordered, editable components for notices, call to worship, prayer cues, songs, psalms, readings, teaching, liturgy, and custom slides
-- Staff sign-in using an Argon2 password hash, signed HTTP-only sessions, CSRF protection, login throttling, and audit display names
-- Five-minute editing leases, autosave conflict detection, archive/restore, generated revision history, and 730-day deck-expiry metadata
-- Server-side ESV lookup with manual-entry fallback
-- Conditional object writes through an injected object-store trait, with Cloudflare R2 in production and an in-memory test implementation
-- Server-rendered Askama pages, static CSS, and browser ES modules with no Node toolchain
-- Embedded Sing Psalms, WSC, liturgy, and canonical 4:3 TWPC PowerPoint assets
+## Running it
 
-## Configuration
+The server needs a few things from the environment:
 
-Production requires:
+| Variable | Purpose |
+| --- | --- |
+| `ESV_API_KEY` | Fetching scripture text |
+| `STAFF_PASSWORD_HASH` | The shared staff password, hashed — generate one with `cargo run --bin hash-password` |
+| `SESSION_SIGNING_SECRET` | Signing session cookies; at least 32 bytes |
+| `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | Cloudflare R2, where services and the song library are stored |
+| `PORT` | Defaults to 8080 |
+| `OBJECT_STORE` | Set to `memory` to run without R2; nothing is persisted |
+| `COOKIE_SECURE` | Set to `false` when developing over plain HTTP |
 
-```text
-ESV_API_KEY
-STAFF_PASSWORD_HASH
-SESSION_SIGNING_SECRET
-R2_ACCOUNT_ID
-R2_BUCKET
-R2_ACCESS_KEY_ID
-R2_SECRET_ACCESS_KEY
-```
-
-`STAFF_PASSWORD_HASH` must be an Argon2 PHC string. `SESSION_SIGNING_SECRET` must contain at least 32 characters. Configure the R2 bucket as private and apply a 730-day lifecycle rule to `generated/services/`; entity definitions and immutable source versions must not use that expiry rule.
-
-For disposable local development, set `OBJECT_STORE=memory`. Production defaults to R2 and fails closed when any R2 setting is missing.
-
-## Development
-
-The project pins Rust 1.97.1 in `rust-toolchain.toml`, CI, and Docker.
-
-```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+```sh
 cargo run -p server
 ```
 
-The Docker image is the deployment source of truth:
+For a quick local look, `OBJECT_STORE=memory` avoids needing R2 credentials at
+all. Deployment is by Docker; `render.yaml` describes the hosted setup.
 
-```bash
-docker build -t twpc-service-builder .
-docker run --rm -p 8080:8080 --env-file .env twpc-service-builder
+## Building and testing
+
+```sh
+cargo test --workspace        # Rust: unit tests and HTTP endpoint tests
+npm test                      # frontend: vitest under jsdom
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The supplied 86-deck song archive has a dry-run capable, idempotent importer. It validates the exact expected total of 365 ordered slides before writing immutable R2 objects:
+The last two are enforced by CI; `npm test` is not, so run it locally when you
+touch anything in `crates/server/static/`.
 
-```bash
-cargo run -p server --bin import-song-library -- "Attachments-sample services.zip" --dry-run
-cargo run -p server --bin import-song-library -- "Attachments-sample services.zip"
-```
+**Static assets and JSON data are compiled into the binary** with `include_str!`
+and `include_bytes!`. Editing a file under `crates/server/static/`,
+`crates/server/templates/` or `crates/deck-builder/assets/` has no effect on a
+running server until you rebuild.
 
-Only `/login`, `/healthz`, and the immutable static assets used by the login page are public. Service, preview, history, reporting, and generation APIs require a staff session.
+## Layout
 
-## Repository layout
+- **`crates/deck-builder`** — the service model (presets, components) and deck
+  generation. `build_deck` walks the order of service and clones seed slides from
+  the branded template. Embedded data lives in `assets/`: the template itself,
+  the psalter, the catechisms and confession, and the fixed liturgy wording.
+- **`crates/pptx-template`** — OpenXML editing done by hand: open a package, clone
+  slides, set shape text and run formatting, import slides from another deck.
+  There is no PowerPoint library underneath it.
+- **`crates/server`** — the axum web server. Sessions and CSRF, the JSON API, the
+  askama templates, and the R2 object store. Also two small binaries:
+  `hash-password` and `import-song-library`.
 
-```text
-crates/pptx-template/   OOXML package and slide operations
-crates/deck-builder/    domain model, presets, embedded data, deck generation
-crates/server/          Axum routes, authentication, storage, templates and UI
-legacy/python/          unsupported historical generator and its assets
-```
+The frontend is vanilla ES modules with no framework and no build step.
+
+Songs are not kept in this repository. Each one is a PowerPoint held in object
+storage and imported into the generated deck slide for slide, so the lyrics
+appear exactly as they were laid out. Staff add them through the song library
+page.
+
+## A warning about PowerPoint
+
+PowerPoint enforces rules that schema validators, including the Open XML SDK,
+happily ignore — slide master and layout IDs must be globally unique, every
+reachable master must be registered, and each master must own its theme part.
+Real PowerPoint is the only trustworthy check that a generated deck opens. If you
+are changing anything in `pptx-template`, read
+[`docs/powerpoint-repair-postmortem.md`](docs/powerpoint-repair-postmortem.md)
+first.
+
+## Conventions
+
+All congregation-facing text uses British English; scripture fetched from the ESV
+API is converted by `textproc::british_spellings`. Commit messages are an
+imperative sentence with no prefix, body wrapped at about 72 characters.
+
+`CLAUDE.md` is the working guide for LLM assistants; `PRODUCT.md` and `DESIGN.md`
+cover the product intent and interface design.

@@ -154,6 +154,13 @@ pub async fn build_deck(
                     runs.push(reference_run);
                 }
                 set_shape_runs(&mut pres, slide, "Text Placeholder 2", &runs)?;
+                hide_logo_when_text_reaches_it(
+                    &mut pres,
+                    slide,
+                    "Text Placeholder 2",
+                    &runs,
+                    3600,
+                )?;
             }
             ServiceComponent::CuePrayer {
                 heading, cue, text, ..
@@ -175,6 +182,8 @@ pub async fn build_deck(
                     let slide = clone_seed(&mut pres, SEED_LITURGY, "prayer text")?;
                     set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
                     set_shape_text(&mut pres, slide, "TextShape 2", &body)?;
+                    let runs = [Run::plain(&body)];
+                    hide_logo_when_text_reaches_it(&mut pres, slide, "TextShape 2", &runs, 4000)?;
                 }
             }
             ServiceComponent::Song {
@@ -206,6 +215,10 @@ pub async fn build_deck(
                     pres.import_slides(&source_pptx)
                         .context("import original song slides")?;
                 } else {
+                    let slides = slides
+                        .into_iter()
+                        .filter(|lyrics| !lyrics.trim().is_empty())
+                        .collect::<Vec<_>>();
                     let slides = if slides.is_empty() {
                         vec!["Song selected in the service editor".to_string()]
                     } else {
@@ -218,6 +231,14 @@ pub async fn build_deck(
                         let slide = clone_seed(&mut pres, seed, "lyric slide")?;
                         set_shape_text(&mut pres, slide, "TextShape 1", &resolved_title)?;
                         set_shape_text(&mut pres, slide, "TextBox 1", &lyrics)?;
+                        let lyric_runs = [Run::plain(&lyrics)];
+                        hide_logo_when_text_reaches_it(
+                            &mut pres,
+                            slide,
+                            "TextBox 1",
+                            &lyric_runs,
+                            3200,
+                        )?;
                         if is_final {
                             let footer = if resolved_credits.trim().is_empty() {
                                 format!("CCLI: {ccli_licence_number}")
@@ -248,6 +269,10 @@ pub async fn build_deck(
                 } else {
                     (slide_breaks.clone(), String::new())
                 };
+                let slides = slides
+                    .into_iter()
+                    .filter(|stanza| !stanza.trim().is_empty())
+                    .collect::<Vec<_>>();
                 let slides = if slides.is_empty() {
                     vec!["Choose a psalm passage".to_string()]
                 } else {
@@ -262,12 +287,9 @@ pub async fn build_deck(
                         reference
                     };
                     set_shape_text(&mut pres, slide, "TextShape 1", title)?;
-                    set_shape_runs(
-                        &mut pres,
-                        slide,
-                        "TextShape 2",
-                        &psalm_runs(&stanza, *show_verse_numbers),
-                    )?;
+                    let runs = psalm_runs(&stanza, *show_verse_numbers);
+                    set_shape_runs(&mut pres, slide, "TextShape 2", &runs)?;
+                    hide_logo_when_text_reaches_it(&mut pres, slide, "TextShape 2", &runs, 2800)?;
                     if index + 1 == count {
                         pres.copy_shape(SEED_SONG_FINAL, "TextBox 4", slide, "Psalm Credits")?;
                         pres.slide_mut(slide)?
@@ -330,7 +352,9 @@ pub async fn build_deck(
                 }
                 let slide = clone_seed(&mut pres, SEED_TEACHING, "teaching")?;
                 set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
-                set_shape_runs(&mut pres, slide, "TextShape 3", &teaching_runs(&resolved))?;
+                let runs = teaching_runs(&resolved);
+                set_shape_runs(&mut pres, slide, "TextShape 3", &runs)?;
+                hide_logo_when_text_reaches_it(&mut pres, slide, "TextShape 3", &runs, 3000)?;
             }
             ServiceComponent::LiturgyBlock {
                 heading, key, text, ..
@@ -367,12 +391,9 @@ pub async fn build_deck(
                 for (index, page) in pages.into_iter().enumerate() {
                     let slide = clone_seed(&mut pres, SEED_LITURGY, "liturgy")?;
                     set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
-                    set_shape_runs(
-                        &mut pres,
-                        slide,
-                        "TextShape 2",
-                        &liturgy_runs(&speaker, &page, index == 0),
-                    )?;
+                    let runs = liturgy_runs(&speaker, &page, index == 0);
+                    set_shape_runs(&mut pres, slide, "TextShape 2", &runs)?;
+                    hide_logo_when_text_reaches_it(&mut pres, slide, "TextShape 2", &runs, 4000)?;
                 }
             }
             ServiceComponent::CustomTextImage {
@@ -386,6 +407,8 @@ pub async fn build_deck(
                     let slide = clone_seed(&mut pres, SEED_READING, "custom text")?;
                     set_shape_text(&mut pres, slide, "TextShape 1", heading)?;
                     set_shape_text(&mut pres, slide, "TextShape 3", page)?;
+                    let runs = [Run::plain(page)];
+                    hide_logo_when_text_reaches_it(&mut pres, slide, "TextShape 3", &runs, 3600)?;
                 }
             }
         }
@@ -535,6 +558,58 @@ const EMU_PER_POINT: u64 = 12_700;
 const PSALM_AVERAGE_GLYPH_WIDTH_PERCENT: u64 = 50;
 const PSALM_VERTICAL_SAFETY_PERCENT: u64 = 85;
 const PSALM_HORIZONTAL_SAFETY_PERCENT: u64 = 90;
+
+// Top edge of the TWPC logo on the slide master ("Picture 6"). When body text
+// is estimated to reach this line the slide hides master graphics so the text
+// does not sit on top of the logo.
+const LOGO_TOP_Y_EMU: u64 = 6_242_760;
+
+fn hide_logo_when_text_reaches_it(
+    pres: &mut Presentation,
+    slide: usize,
+    shape_name: &str,
+    runs: &[Run],
+    default_font_size: u32,
+) -> anyhow::Result<()> {
+    let (_, shape_y, shape_width, _) = pres.slide_mut(slide)?.shape(shape_name)?.position()?;
+    if shape_y + estimated_runs_height_emu(runs, shape_width, default_font_size) > LOGO_TOP_Y_EMU {
+        pres.slide_mut(slide)?.hide_master_graphics()?;
+    }
+    Ok(())
+}
+
+// Mirrors the paragraph splitting in pptx-template: run text is broken into
+// paragraphs on newlines, and blank lines become empty paragraphs one line
+// high. Uses the same glyph-width and safety factors as the psalm capacity
+// estimate so the two heuristics agree.
+fn estimated_runs_height_emu(runs: &[Run], shape_width_emu: u64, default_font_size: u32) -> u64 {
+    let mut paragraphs: Vec<(String, u64)> = vec![(String::new(), 0)];
+    for run in runs {
+        let font_size = u64::from(run.font_size.unwrap_or(default_font_size));
+        let mut lines = run.text.split('\n').peekable();
+        while let Some(line) = lines.next() {
+            let current = paragraphs.last_mut().expect("one paragraph");
+            current.0.push_str(line);
+            current.1 = current.1.max(font_size);
+            if lines.peek().is_some() {
+                paragraphs.push((String::new(), 0));
+            }
+        }
+    }
+    paragraphs
+        .into_iter()
+        .map(|(text, font_size)| {
+            let font_size = font_size.max(u64::from(default_font_size));
+            let font_height_emu = font_size * EMU_PER_POINT / 100;
+            let glyph_width_emu =
+                (font_height_emu * PSALM_AVERAGE_GLYPH_WIDTH_PERCENT / 100).max(1);
+            let usable_width_emu = shape_width_emu * PSALM_HORIZONTAL_SAFETY_PERCENT / 100;
+            let characters_per_line = (usable_width_emu / glyph_width_emu).max(1) as usize;
+            let lines = text.chars().count().div_ceil(characters_per_line).max(1) as u64;
+            lines * font_height_emu * 100 / PSALM_VERTICAL_SAFETY_PERCENT
+        })
+        .sum()
+}
 
 fn psalm_layout_capacity() -> (usize, usize) {
     let font_height_emu = PSALM_FONT_SIZE_HUNDREDTHS_PT * EMU_PER_POINT / 100;

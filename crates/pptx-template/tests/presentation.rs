@@ -19,11 +19,54 @@ fn round_trip_preserves_slide_relationship_integrity() {
 }
 
 #[test]
+fn shape_position_reads_geometry_and_master_graphics_can_be_hidden() {
+    let mut pres = Presentation::open_bytes(TEMPLATE).expect("open template");
+    let position = pres
+        .slide_mut(16)
+        .unwrap()
+        .shape("TextShape 2")
+        .unwrap()
+        .position()
+        .unwrap();
+    assert_eq!(position, (397_041, 1_267_778, 9_683_583, 4_506_298));
+
+    assert!(!pres.slide_xml(16).unwrap().contains("showMasterSp"));
+    pres.slide_mut(16).unwrap().hide_master_graphics().unwrap();
+    let xml = pres.slide_xml(16).unwrap();
+    assert!(xml.contains("showMasterSp=\"0\""));
+    pres.validate().expect("package still validates");
+    // Hiding twice keeps a single, still-disabled flag.
+    pres.slide_mut(16).unwrap().hide_master_graphics().unwrap();
+    assert_eq!(
+        pres.slide_xml(16).unwrap().matches("showMasterSp").count(),
+        1
+    );
+}
+
+#[test]
 fn canonical_template_has_exact_twpc_dimensions() {
     let pres = Presentation::open_bytes(TEMPLATE).expect("template opens");
     assert_eq!(pres.slide_size().unwrap(), (10_080_625, 7_559_675));
     pres.validate_song_source((10_080_625, 7_559_675))
         .expect("canonical template is a valid source package");
+}
+
+#[test]
+fn rejecting_a_widescreen_song_deck_explains_how_to_fix_it() {
+    let pres = Presentation::open_bytes(TEMPLATE).expect("template opens");
+    // Ask the 4:3 template to validate against a 16:9 expectation, which produces the same
+    // message a widescreen song deck gets when it is uploaded.
+    let error = pres
+        .validate_song_source((12_192_000, 6_858_000))
+        .expect_err("mismatched dimensions are rejected")
+        .to_string();
+
+    assert!(error.contains("4:3"), "{error}");
+    assert!(error.contains("16:9 widescreen"), "{error}");
+    assert!(error.contains("Design → Slide Size"), "{error}");
+    // Raw EMU numbers are meaningless to the staff who see this.
+    assert!(!error.contains("10080625"), "{error}");
+    assert!(!error.contains("12192000"), "{error}");
 }
 
 #[test]
@@ -485,6 +528,155 @@ fn validation_rejects_registered_masters_sharing_a_theme_part() {
         error.to_string().contains("share theme part"),
         "unexpected validation error: {error}"
     );
+}
+
+/// A song deck built from the service template keeps layouts byte-identical to the
+/// destination's, so import de-duplication collapses them onto the destination master's layout
+/// parts. If the deck's master differs at all it is still imported as a new master, which then
+/// lists layouts belonging to the template's master. Real PowerPoint refuses such a package
+/// outright — no repair offered — while every schema validator accepts it.
+#[test]
+fn importing_a_template_derived_song_deck_gives_its_master_private_layouts() {
+    let source = template_derived_song_deck();
+    let mut destination = Presentation::open_bytes(TEMPLATE).expect("open destination");
+    destination
+        .import_slides(&source)
+        .expect("import template-derived song deck");
+
+    let generated = destination.save_bytes().expect("save generated package");
+    Presentation::open_bytes(&generated)
+        .expect("reopen generated package")
+        .validate()
+        .expect("imported master must own the layouts it lists");
+
+    let mut archive = ZipArchive::new(Cursor::new(generated)).expect("open generated package");
+    let mut master_rels = String::new();
+    archive
+        .by_name("ppt/slideMasters/_rels/slideMaster2.xml.rels")
+        .expect("imported master relationships exist")
+        .read_to_string(&mut master_rels)
+        .expect("imported master relationships are UTF-8");
+
+    let layout_relationship =
+        Regex::new(r#"<Relationship\b[^>]*Type="[^"]*/slideLayout"[^>]*/>"#).unwrap();
+    let layouts = layout_relationship
+        .find_iter(&master_rels)
+        .map(|entry| {
+            xml_attr(entry.as_str(), "Target")
+                .expect("layout relationship has a target")
+                .trim_start_matches("../")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert!(!layouts.is_empty(), "imported master lists layouts");
+
+    let master_relationship =
+        Regex::new(r#"<Relationship\b[^>]*Type="[^"]*/slideMaster"[^>]*/>"#).unwrap();
+    for layout in layouts {
+        let mut rels = String::new();
+        let (directory, file) = layout
+            .rsplit_once('/')
+            .expect("layout part has a directory");
+        archive
+            .by_name(&format!("ppt/{directory}/_rels/{file}.rels"))
+            .expect("layout relationships exist")
+            .read_to_string(&mut rels)
+            .expect("layout relationships are UTF-8");
+        let backlink = master_relationship
+            .find(&rels)
+            .map(|entry| xml_attr(entry.as_str(), "Target").expect("master target"))
+            .expect("layout points back at a master");
+        assert_eq!(
+            backlink, "../slideMasters/slideMaster2.xml",
+            "layout ppt/{layout} is listed by slideMaster2 but belongs to another master"
+        );
+    }
+}
+
+#[test]
+fn validation_rejects_a_layout_owned_by_another_registered_master() {
+    let error = Presentation::open_bytes(&cross_linked_package())
+        .expect("open cross-linked package")
+        .validate()
+        .expect_err("a layout owned by another master must fail validation");
+    assert!(
+        error.to_string().contains("belongs to"),
+        "unexpected validation error: {error}"
+    );
+}
+
+/// Decks generated before layout ownership was enforced are still in storage and PowerPoint
+/// refuses them outright, so the only way to recover their slides is to mend the stored file.
+#[test]
+fn repair_heals_a_deck_whose_master_lists_another_masters_layouts() {
+    let broken = cross_linked_package();
+    let mut presentation = Presentation::open_bytes(&broken).expect("open broken package");
+    presentation
+        .validate()
+        .expect_err("the package starts out broken");
+
+    assert!(
+        presentation.repair().expect("repair runs"),
+        "repair changed the package"
+    );
+    presentation
+        .validate()
+        .expect("repaired package satisfies layout ownership");
+
+    let healed = presentation.save_bytes().expect("save healed package");
+    let reopened = Presentation::open_bytes(&healed).expect("reopen healed package");
+    reopened.validate().expect("healed package validates");
+
+    // The slides are the whole point of recovering the file, so they must survive untouched.
+    let before = Presentation::open_bytes(&broken).expect("reopen broken package");
+    assert_eq!(reopened.slide_count(), before.slide_count());
+    for index in 0..before.slide_count() {
+        assert_eq!(
+            reopened.slide_xml(index).unwrap(),
+            before.slide_xml(index).unwrap(),
+            "slide {index} was altered by the repair"
+        );
+    }
+
+    // Repairing an already-sound package must be a no-op, so serving a deck cannot keep
+    // rewriting it.
+    let mut again = Presentation::open_bytes(&healed).expect("reopen healed package");
+    assert!(!again.repair().expect("second repair runs"));
+}
+
+/// An imported master pointed back at the destination master's layouts: the shape import
+/// de-duplication produced before it was fixed, and the shape sitting in storage today.
+fn cross_linked_package() -> Vec<u8> {
+    let source = source_with_distinct_master(DISTINCT_MASTER_ID);
+    let mut destination = Presentation::open_bytes(TEMPLATE).expect("open destination");
+    destination
+        .import_slides(&source)
+        .expect("import source with distinct master");
+    let generated = destination.save_bytes().expect("save generated package");
+    rewrite_zip_part(
+        generated,
+        "ppt/slideLayouts/_rels/slideLayout14.xml.rels",
+        |xml| {
+            Regex::new(r#"(Type="[^"]*/slideMaster"[^>]*Target=")[^"]*(")"#)
+                .expect("valid master relationship regex")
+                .replace(&xml, "${1}../slideMasters/slideMaster1.xml${2}")
+                .into_owned()
+        },
+    )
+}
+
+/// The template with one layout and its master edited: the edit stops that layout
+/// de-duplicating, so the master is imported anew, while every other layout still matches the
+/// destination's byte for byte.
+fn template_derived_song_deck() -> Vec<u8> {
+    let edited_layout = rewrite_zip_part(
+        TEMPLATE.to_vec(),
+        "ppt/slideLayouts/slideLayout12.xml",
+        |xml| xml.replacen("<p:sldLayout ", "<p:sldLayout userDrawn=\"1\" ", 1),
+    );
+    rewrite_zip_part(edited_layout, "ppt/slideMasters/slideMaster1.xml", |xml| {
+        xml.replacen("preserve=\"1\"", "preserve=\"0\"", 1)
+    })
 }
 
 fn source_without_distinct_master_registration() -> Vec<u8> {

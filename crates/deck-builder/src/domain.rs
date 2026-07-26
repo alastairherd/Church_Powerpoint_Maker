@@ -395,6 +395,11 @@ pub struct GeneratedDeckVersion {
     pub generated_by: String,
     pub expires_at: DateTime<Utc>,
     pub source_revision: u64,
+    /// The service exactly as it stood when this deck was built. The live service goes on being
+    /// edited, so without a snapshot there is no way to see what produced a given file. Records
+    /// written before this was captured have `None`.
+    #[serde(default)]
+    pub service: Option<ServiceRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

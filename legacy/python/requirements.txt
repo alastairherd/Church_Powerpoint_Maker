@@ -1,5 +1,0 @@
-beautifulsoup4
-pandas
-python-pptx
-requests
-

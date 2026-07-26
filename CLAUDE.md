@@ -3,8 +3,9 @@
 TWPC Service Builder: a web app that lets church staff assemble an order of service
 (songs, psalms, readings, notices, liturgy, teaching) and generate a PowerPoint deck
 from a TWPC-branded template. Active development happens on the Rust web app
-(`release/rust-web-app` branch); `legacy/python/` is an earlier prototype kept for
-reference only.
+(`release/rust-web-app` branch). An earlier python-pptx desktop prototype was
+removed once the Rust app reached parity; find it in the history under `legacy/`
+if a question about the original behaviour ever comes up.
 
 ## Workspace layout
 
