@@ -1030,8 +1030,66 @@ impl Presentation {
                 }
             }
         }
+        self.validate_layout_ownership(&entry_targets)?;
         self.registered_master_and_layout_ids()?;
         Ok(())
+    }
+
+    /// PowerPoint requires a slide layout to belong to exactly one master: the layout a master
+    /// lists must point back at that same master. Import de-duplication can otherwise collapse an
+    /// incoming layout onto an identical layout owned by another master, which leaves a package
+    /// every schema validator accepts and PowerPoint refuses to open.
+    fn validate_layout_ownership(&self, masters: &HashSet<String>) -> Result<()> {
+        let mut owners: BTreeMap<String, String> = BTreeMap::new();
+        for master in masters {
+            let relationships = self.part_string(&relationships_part(master))?;
+            for relationship in relationship_tags(&relationships) {
+                if !attr(&relationship, "Type").is_some_and(|value| value.ends_with("/slideLayout"))
+                {
+                    continue;
+                }
+                let target = attr(&relationship, "Target").ok_or_else(|| {
+                    Error::InvalidPackage(format!("{master} layout relationship has no target"))
+                })?;
+                let layout = resolve_part_target(master, &target)?;
+                if let Some(other) = owners.insert(layout.clone(), master.clone()) {
+                    return Err(Error::InvalidPackage(format!(
+                        "slide masters {other} and {master} both list layout {layout}"
+                    )));
+                }
+                for backlink in self.layout_master_backlinks(&layout)? {
+                    if &backlink != master {
+                        return Err(Error::InvalidPackage(format!(
+                            "layout {layout} is listed by {master} but belongs to {backlink}"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn layout_master_backlinks(&self, layout_part: &str) -> Result<Vec<String>> {
+        let relationships_name = relationships_part(layout_part);
+        let Some(bytes) = self.files.get(&relationships_name) else {
+            return Ok(Vec::new());
+        };
+        let xml = String::from_utf8(bytes.clone())
+            .map_err(|_| Error::InvalidPackage(format!("{relationships_name} is not utf-8")))?;
+        relationship_tags(&xml)
+            .into_iter()
+            .filter(|relationship| {
+                attr(relationship, "Type").is_some_and(|value| value.ends_with("/slideMaster"))
+            })
+            .map(|relationship| {
+                let target = attr(&relationship, "Target").ok_or_else(|| {
+                    Error::InvalidPackage(format!(
+                        "{layout_part} master relationship has no target"
+                    ))
+                })?;
+                resolve_part_target(layout_part, &target)
+            })
+            .collect()
     }
 
     fn registered_master_and_layout_ids(&self) -> Result<HashSet<u32>> {
@@ -1279,6 +1337,7 @@ impl Presentation {
             return Ok(());
         }
 
+        self.give_master_private_layouts(master_part)?;
         let mut used_ids = self.normalize_slide_master_layout_ids(master_part)?;
         let id = self.allocate_master_or_layout_id(&mut used_ids)?;
         let master_rid = if let Some(rid) = master_rid {
@@ -1298,6 +1357,113 @@ impl Presentation {
         insert_before(&mut presentation, "</p:sldMasterIdLst>", &entry)?;
         self.files
             .insert(PRESENTATION.into(), presentation.into_bytes());
+        Ok(())
+    }
+
+    /// Copies any layout this master lists but does not own, so the master gets a private copy
+    /// backlinking to itself.
+    ///
+    /// Import de-duplication matches a layout on its contents alone, so a song deck built from
+    /// the service template carries layouts byte-identical to the destination's. Those collapse
+    /// onto the destination master's layout parts while the master itself, differing by so much
+    /// as one `p:sldLayoutId` entry, is still imported as a new master — leaving the new master
+    /// listing layouts that belong to the old one. PowerPoint refuses such a package outright.
+    fn give_master_private_layouts(&mut self, master_part: &str) -> Result<()> {
+        let relationships_name = relationships_part(master_part);
+        let relationships_xml = self.part_string(&relationships_name)?;
+        let mut rewritten = Vec::new();
+        let mut changed = false;
+
+        for relationship in relationship_tags(&relationships_xml) {
+            let is_layout =
+                attr(&relationship, "Type").is_some_and(|value| value.ends_with("/slideLayout"));
+            if !is_layout {
+                rewritten.push(relationship);
+                continue;
+            }
+            let target = attr(&relationship, "Target").ok_or_else(|| {
+                Error::InvalidPackage(format!("{master_part} layout relationship has no target"))
+            })?;
+            let layout = resolve_part_target(master_part, &target)?;
+            let backlinks = self.layout_master_backlinks(&layout)?;
+            if backlinks.iter().all(|backlink| backlink == master_part) {
+                rewritten.push(relationship);
+                continue;
+            }
+
+            let private = self.allocate_import_part(&layout, 1);
+            let layout_bytes = self
+                .files
+                .get(&layout)
+                .ok_or_else(|| Error::MissingPart(layout.clone()))?
+                .clone();
+            self.files.insert(private.clone(), layout_bytes);
+            self.copy_content_type(&layout, &private)?;
+
+            // The copy keeps the original's relationships, with its master pointed at this one.
+            let layout_relationships = self.part_string(&relationships_part(&layout))?;
+            let mut copied = Vec::new();
+            for layout_relationship in relationship_tags(&layout_relationships) {
+                let is_master = attr(&layout_relationship, "Type")
+                    .is_some_and(|value| value.ends_with("/slideMaster"));
+                if is_master {
+                    let master_target = relative_part_target(&private, master_part);
+                    copied.push(replace_xml_attr(
+                        &layout_relationship,
+                        "Target",
+                        &master_target,
+                    ));
+                    continue;
+                }
+                // Targets are relative to the part that owns them, and the copy sits alongside
+                // the original, so they carry over untouched.
+                copied.push(layout_relationship);
+            }
+            self.files.insert(
+                relationships_part(&private),
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{}</Relationships>"#,
+                    copied.join("")
+                )
+                .into_bytes(),
+            );
+
+            let new_target = relative_part_target(master_part, &private);
+            rewritten.push(replace_xml_attr(&relationship, "Target", &new_target));
+            changed = true;
+        }
+
+        if changed {
+            self.files.insert(
+                relationships_name,
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{}</Relationships>"#,
+                    rewritten.join("")
+                )
+                .into_bytes(),
+            );
+        }
+        Ok(())
+    }
+
+    fn copy_content_type(&mut self, source_part: &str, destination_part: &str) -> Result<()> {
+        let mut xml = self.part_string(CONTENT_TYPES)?;
+        let destination_name = format!("/{destination_part}");
+        if xml.contains(&format!("PartName=\"{destination_name}\"")) {
+            return Ok(());
+        }
+        let source_name = format!("/{source_part}");
+        let overrides = Regex::new(r#"<Override\b[^>]*/>"#).expect("valid override regex");
+        let source_override = overrides
+            .find_iter(&xml)
+            .map(|entry| entry.as_str().to_string())
+            .find(|entry| attr(entry, "PartName").as_deref() == Some(source_name.as_str()))
+            .ok_or_else(|| {
+                Error::InvalidPackage(format!("no content type override for {source_part}"))
+            })?;
+        let copied = replace_xml_attr(&source_override, "PartName", &destination_name);
+        insert_before(&mut xml, "</Types>", &copied)?;
+        self.files.insert(CONTENT_TYPES.into(), xml.into_bytes());
         Ok(())
     }
 

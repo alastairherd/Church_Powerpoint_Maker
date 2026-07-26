@@ -79,20 +79,39 @@ The only true oracle is opening the file in real PowerPoint.
 
 - `Presentation::validate()` (called on every save path and by
   `validate_song_source`) rejects: unregistered reachable masters, duplicate
-  master/layout IDs, and masters sharing a theme part.
+  master/layout IDs, masters sharing a theme part, and layouts listed by a
+  master that do not belong to it.
 - Regression tests in `crates/pptx-template/tests/presentation.rs` reconstruct
-  the exact r15 and r16 package shapes and assert validation rejects them
+  the exact r15, r16 and cross-master-layout package shapes and assert
+  validation rejects them
   (`validation_rejects_r15_layout_ids_overlapping_across_registered_masters`,
-  `validation_rejects_registered_masters_sharing_a_theme_part`).
+  `validation_rejects_registered_masters_sharing_a_theme_part`,
+  `validation_rejects_a_layout_owned_by_another_registered_master`).
 
-## Known residual risks (unfixed as of 0af924d)
+## The fourth defect: layouts owned by another master (July 2026)
 
-- Layout import dedup compares a layout's master by *content similarity* and
-  relationship *shapes* only. A source master that differs from the
-  destination master only in relationship targets (e.g. a different background
-  image) could dedup a layout onto the destination master's layout while still
-  creating a new master — recreating a cross-master backlink violation.
-  Validation does not yet check layout↔master backlinks.
+The residual risk this document used to list as unfixed — layout de-duplication
+recreating a cross-master backlink — came true in production once staff could
+upload their own song decks. A song deck built from the service template keeps
+layouts **byte-identical** to the destination's, so import de-duplication
+collapsed them onto the destination master's layout parts; the deck's master
+differed by a single attribute, so it was still imported as a new master. The
+result: `slideMaster2` listing eleven layouts that backlink to `slideMaster1`.
+`validate()` passed, the Open XML SDK passed, and PowerPoint refused the file
+outright with no repair offered (`0x80070570`).
+
+Confirmed by binary-patching a failing download to give `slideMaster2` private
+copies of those layouts, which then opened cleanly — the same technique that
+settled the theme diagnosis, and again the fastest route to an answer.
+
+Fixed by `Presentation::give_master_private_layouts`, called from
+`register_slide_master`: any layout a newly registered master lists but does
+not own is copied, and the copy's `.rels` points back at the new master.
+De-duplication is otherwise unchanged, so re-importing the *same* deck still
+reuses layouts rather than multiplying parts.
+
+## Known residual risks
+
 - `attr(tag, "id")` uses `\bid="` which also matches `r:id="`; safe only while
   generated XML always puts `id` before `r:id`.
 - `add_slide_from_layout` copies a layout's whole inner XML; if used with a

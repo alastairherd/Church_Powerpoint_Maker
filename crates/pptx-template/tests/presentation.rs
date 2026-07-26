@@ -530,6 +530,115 @@ fn validation_rejects_registered_masters_sharing_a_theme_part() {
     );
 }
 
+/// A song deck built from the service template keeps layouts byte-identical to the
+/// destination's, so import de-duplication collapses them onto the destination master's layout
+/// parts. If the deck's master differs at all it is still imported as a new master, which then
+/// lists layouts belonging to the template's master. Real PowerPoint refuses such a package
+/// outright — no repair offered — while every schema validator accepts it.
+#[test]
+fn importing_a_template_derived_song_deck_gives_its_master_private_layouts() {
+    let source = template_derived_song_deck();
+    let mut destination = Presentation::open_bytes(TEMPLATE).expect("open destination");
+    destination
+        .import_slides(&source)
+        .expect("import template-derived song deck");
+
+    let generated = destination.save_bytes().expect("save generated package");
+    Presentation::open_bytes(&generated)
+        .expect("reopen generated package")
+        .validate()
+        .expect("imported master must own the layouts it lists");
+
+    let mut archive = ZipArchive::new(Cursor::new(generated)).expect("open generated package");
+    let mut master_rels = String::new();
+    archive
+        .by_name("ppt/slideMasters/_rels/slideMaster2.xml.rels")
+        .expect("imported master relationships exist")
+        .read_to_string(&mut master_rels)
+        .expect("imported master relationships are UTF-8");
+
+    let layout_relationship =
+        Regex::new(r#"<Relationship\b[^>]*Type="[^"]*/slideLayout"[^>]*/>"#).unwrap();
+    let layouts = layout_relationship
+        .find_iter(&master_rels)
+        .map(|entry| {
+            xml_attr(entry.as_str(), "Target")
+                .expect("layout relationship has a target")
+                .trim_start_matches("../")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert!(!layouts.is_empty(), "imported master lists layouts");
+
+    let master_relationship =
+        Regex::new(r#"<Relationship\b[^>]*Type="[^"]*/slideMaster"[^>]*/>"#).unwrap();
+    for layout in layouts {
+        let mut rels = String::new();
+        let (directory, file) = layout
+            .rsplit_once('/')
+            .expect("layout part has a directory");
+        archive
+            .by_name(&format!("ppt/{directory}/_rels/{file}.rels"))
+            .expect("layout relationships exist")
+            .read_to_string(&mut rels)
+            .expect("layout relationships are UTF-8");
+        let backlink = master_relationship
+            .find(&rels)
+            .map(|entry| xml_attr(entry.as_str(), "Target").expect("master target"))
+            .expect("layout points back at a master");
+        assert_eq!(
+            backlink, "../slideMasters/slideMaster2.xml",
+            "layout ppt/{layout} is listed by slideMaster2 but belongs to another master"
+        );
+    }
+}
+
+#[test]
+fn validation_rejects_a_layout_owned_by_another_registered_master() {
+    let source = source_with_distinct_master(DISTINCT_MASTER_ID);
+    let mut destination = Presentation::open_bytes(TEMPLATE).expect("open destination");
+    destination
+        .import_slides(&source)
+        .expect("import source with distinct master");
+    let generated = destination.save_bytes().expect("save generated package");
+
+    // Point one of the imported master's layouts back at the template's master, which is the
+    // shape import de-duplication used to produce.
+    let cross_linked = rewrite_zip_part(
+        generated,
+        "ppt/slideLayouts/_rels/slideLayout14.xml.rels",
+        |xml| {
+            Regex::new(r#"(Type="[^"]*/slideMaster"[^>]*Target=")[^"]*(")"#)
+                .expect("valid master relationship regex")
+                .replace(&xml, "${1}../slideMasters/slideMaster1.xml${2}")
+                .into_owned()
+        },
+    );
+
+    let error = Presentation::open_bytes(&cross_linked)
+        .expect("open cross-linked package")
+        .validate()
+        .expect_err("a layout owned by another master must fail validation");
+    assert!(
+        error.to_string().contains("belongs to"),
+        "unexpected validation error: {error}"
+    );
+}
+
+/// The template with one layout and its master edited: the edit stops that layout
+/// de-duplicating, so the master is imported anew, while every other layout still matches the
+/// destination's byte for byte.
+fn template_derived_song_deck() -> Vec<u8> {
+    let edited_layout = rewrite_zip_part(
+        TEMPLATE.to_vec(),
+        "ppt/slideLayouts/slideLayout12.xml",
+        |xml| xml.replacen("<p:sldLayout ", "<p:sldLayout userDrawn=\"1\" ", 1),
+    );
+    rewrite_zip_part(edited_layout, "ppt/slideMasters/slideMaster1.xml", |xml| {
+        xml.replacen("preserve=\"1\"", "preserve=\"0\"", 1)
+    })
+}
+
 fn source_without_distinct_master_registration() -> Vec<u8> {
     let source = source_with_distinct_master(DISTINCT_MASTER_ID);
     let mut input = ZipArchive::new(Cursor::new(source)).expect("open source package");
