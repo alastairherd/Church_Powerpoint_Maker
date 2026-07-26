@@ -615,3 +615,159 @@ async fn generates_an_immutable_revision_without_locking() {
     assert!(body.starts_with(b"PK"));
     Presentation::open_bytes(&body).unwrap().validate().unwrap();
 }
+
+const SONG_POWERPOINT: &[u8] = include_bytes!("../../deck-builder/assets/template.pptx");
+
+#[tokio::test]
+async fn adding_a_song_by_uploading_a_powerpoint_stores_its_slides() {
+    let (app, cookie, csrf) = authenticated().await;
+
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/songs")
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"title":"And Can it Be","aliases":["And can it be that I should gain"],"variant_label":"","author_owner":"Charles Wesley","rights_status":"public_domain","ccli_song_number":"522221","lyric_slides":[],"credits":""}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let body = to_bytes(created.into_body(), usize::MAX).await.unwrap();
+    let song: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let song_id = song["id"].as_str().unwrap().to_string();
+    // No PowerPoint yet, so no version has been written.
+    assert_eq!(song["current_version"], 0);
+    assert_eq!(song["slide_count"], 0);
+
+    let empty_preview = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/songs/{song_id}/preview"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty_preview.status(), StatusCode::OK);
+    let body = to_bytes(empty_preview.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let preview: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(preview["slides"].as_array().unwrap().len(), 0);
+
+    let uploaded = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/songs/{song_id}/upload"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("x-source-filename", "And Can it Be.pptx")
+                .body(Body::from(SONG_POWERPOINT))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(uploaded.status(), StatusCode::OK);
+    let body = to_bytes(uploaded.into_body(), usize::MAX).await.unwrap();
+    let song: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(song["current_version"], 1);
+    assert_eq!(song["source_filename"], "And Can it Be.pptx");
+    let slide_count = song["slide_count"].as_u64().unwrap();
+    assert!(slide_count > 0);
+
+    let preview = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/songs/{song_id}/preview"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(preview.into_body(), usize::MAX).await.unwrap();
+    let preview: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let slides = preview["slides"].as_array().unwrap();
+    assert_eq!(slides.len() as u64, slide_count);
+    assert!(slides
+        .iter()
+        .any(|slide| !slide.as_str().unwrap_or_default().trim().is_empty()));
+
+    // A second upload becomes the next version rather than overwriting the first.
+    let uploaded_again = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/songs/{song_id}/upload"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .body(Body::from(SONG_POWERPOINT))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(uploaded_again.status(), StatusCode::OK);
+    let body = to_bytes(uploaded_again.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let song: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(song["current_version"], 2);
+}
+
+#[tokio::test]
+async fn uploading_something_that_is_not_a_powerpoint_is_rejected() {
+    let (app, cookie, csrf) = authenticated().await;
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/songs")
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"title":"Not a song","rights_status":"unknown","lyric_slides":[]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(created.into_body(), usize::MAX).await.unwrap();
+    let song: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let song_id = song["id"].as_str().unwrap().to_string();
+
+    let rejected = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/songs/{song_id}/upload"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .body(Body::from("this is a plain text file, not a deck"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(rejected.into_body(), usize::MAX).await.unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("PowerPoint was rejected"));
+}

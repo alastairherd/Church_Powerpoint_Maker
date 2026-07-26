@@ -52,6 +52,24 @@ fn canonical_template_has_exact_twpc_dimensions() {
 }
 
 #[test]
+fn rejecting_a_widescreen_song_deck_explains_how_to_fix_it() {
+    let pres = Presentation::open_bytes(TEMPLATE).expect("template opens");
+    // Ask the 4:3 template to validate against a 16:9 expectation, which produces the same
+    // message a widescreen song deck gets when it is uploaded.
+    let error = pres
+        .validate_song_source((12_192_000, 6_858_000))
+        .expect_err("mismatched dimensions are rejected")
+        .to_string();
+
+    assert!(error.contains("4:3"), "{error}");
+    assert!(error.contains("16:9 widescreen"), "{error}");
+    assert!(error.contains("Design → Slide Size"), "{error}");
+    // Raw EMU numbers are meaningless to the staff who see this.
+    assert!(!error.contains("10080625"), "{error}");
+    assert!(!error.contains("12192000"), "{error}");
+}
+
+#[test]
 fn removing_auxiliary_content_removes_notes_master_declaration() {
     let mut pres = Presentation::open_bytes(TEMPLATE).expect("open template");
     pres.remove_auxiliary_content()

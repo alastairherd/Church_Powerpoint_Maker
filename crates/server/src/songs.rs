@@ -95,6 +95,11 @@ pub(crate) async fn create(
 ) -> Result<Json<SongRecord>, AppError> {
     validate_title(&input.title)?;
     let id = new_id(&state, "song");
+    // A song added by uploading a PowerPoint arrives here with no lyric slides, and its content
+    // is written by the follow-up call to `upload`. Writing an empty v1 in that case would leave
+    // a phantom version behind and show the brand new song as v2, so version 0 means "awaiting
+    // its first upload".
+    let awaiting_upload = input.lyric_slides.is_empty();
     let record = SongRecord {
         id: id.clone(),
         title: input.title.clone(),
@@ -105,27 +110,29 @@ pub(crate) async fn create(
         ccli_song_number: input.ccli_song_number,
         source_filename: None,
         slide_count: input.lyric_slides.len(),
-        current_version: 1,
+        current_version: if awaiting_upload { 0 } else { 1 },
         archived: false,
         review_warnings: warnings(input.rights_status, &input.lyric_slides),
         audit: AuditMetadata::new(&session.display_name),
     };
-    let version = LyricVersion {
-        song_id: id.clone(),
-        version: 1,
-        title: input.title,
-        slides: input.lyric_slides,
-        credits: input.credits,
-        created_at: Utc::now(),
-        created_by: session.display_name,
-    };
-    put_json(
-        state.store.as_ref(),
-        &lyric_version_key(&id, 1),
-        &version,
-        PutCondition::IfNoneMatch,
-    )
-    .await?;
+    if !awaiting_upload {
+        let version = LyricVersion {
+            song_id: id.clone(),
+            version: 1,
+            title: input.title,
+            slides: input.lyric_slides,
+            credits: input.credits,
+            created_at: Utc::now(),
+            created_by: session.display_name,
+        };
+        put_json(
+            state.store.as_ref(),
+            &lyric_version_key(&id, 1),
+            &version,
+            PutCondition::IfNoneMatch,
+        )
+        .await?;
+    }
     put_json(
         state.store.as_ref(),
         &song_key(&id),
@@ -228,6 +235,7 @@ pub(crate) async fn upload(
     .await?;
     song.current_version = version;
     song.slide_count = presentation.slide_count();
+    song.review_warnings = warnings(song.rights_status, &version_record.extracted_text);
     song.source_filename = headers
         .get("x-source-filename")
         .and_then(|value| value.to_str().ok())
@@ -248,6 +256,9 @@ pub(crate) async fn preview(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let (song, _) = load(&state, &id).await?;
+    if song.current_version == 0 {
+        return Ok(Json(json!({ "song": song, "slides": [] })));
+    }
     if let Ok(object) = state
         .store
         .get(&pptx_version_key(&id, song.current_version))

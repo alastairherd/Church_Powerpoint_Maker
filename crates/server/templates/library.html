@@ -35,6 +35,7 @@
           <h1>Song library</h1>
         </div>
         <div class="topbar-actions">
+          <button class="button button-primary" type="button" id="add-song">Add song</button>
           <a class="button button-secondary button-link" href="/">Return to services</a>
         </div>
       </header>
@@ -71,6 +72,56 @@
       </section>
     </main>
   </div>
+  <dialog id="add-song-dialog" class="dialog">
+    <form id="add-song-form">
+      <div class="dialog-heading">
+        <div><p class="section-label">Song library</p><h2>Add a song</h2></div>
+        <button class="icon-button" type="button" value="cancel" aria-label="Close" data-close>×</button>
+      </div>
+      <p>Choose the PowerPoint that holds this song's slides. Its slides are imported exactly as they are, so the deck must be 4:3 and contain only this song.</p>
+      <div class="song-form">
+        <label>Title
+          <input id="song-title" type="text" maxlength="160" required autocomplete="off" placeholder="And Can it Be">
+        </label>
+        <div class="field-row">
+          <label>Author or owner
+            <input id="song-author" type="text" autocomplete="off" placeholder="Charles Wesley">
+          </label>
+          <label>CCLI song number
+            <input id="song-ccli" type="text" autocomplete="off" placeholder="Leave blank if not known">
+          </label>
+        </div>
+        <div class="field-row">
+          <label>Rights status
+            <select id="song-rights">
+              <option value="ccli_covered">CCLI covered</option>
+              <option value="public_domain">Public domain</option>
+              <option value="direct_permission">Direct permission</option>
+              <option value="unknown" selected>Rights unknown</option>
+            </select>
+          </label>
+          <label>Variant label
+            <input id="song-variant" type="text" autocomplete="off" placeholder="e.g. Shortened version">
+          </label>
+        </div>
+        <label>Alternative titles
+          <input id="song-aliases" type="text" autocomplete="off" placeholder="Separate with commas">
+        </label>
+        <label>PowerPoint file
+          <input id="song-file" type="file" accept=".pptx" required>
+        </label>
+        <p class="field-note">A .pptx file up to 25 MB.</p>
+        <p class="loader-error" id="add-song-error" hidden></p>
+      </div>
+      <div class="dialog-actions">
+        <button class="button button-secondary" type="button" value="cancel" data-close>Cancel</button>
+        <button class="button button-primary" type="submit" id="add-song-submit">Add song</button>
+      </div>
+    </form>
+  </dialog>
+
+  <input id="replace-song-file" type="file" accept=".pptx" hidden>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script type="module" src="/static/library.js"></script>
 </body>

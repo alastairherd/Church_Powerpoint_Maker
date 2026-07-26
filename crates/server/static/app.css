@@ -394,7 +394,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--focus); outline:
 .empty-preview > span { color: var(--brand); font-size: 30px; }
 .empty-preview h2 { margin: 10px 0 5px; color: var(--ink); }
 .empty-preview p { max-width: 32ch; margin: 0; }
-.preview-heading { display: flex; justify-content: space-between; gap: 15px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.preview-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.preview-heading .button { flex: 0 0 auto; white-space: nowrap; }
 .preview-heading h2 { margin-bottom: 4px; }
 .preview-heading p { margin: 0; color: var(--ink-soft); font-size: 11px; }
 .song-metadata { display: grid; grid-template-columns: 118px 1fr; gap: 7px 12px; margin: 15px 0 20px; }
@@ -431,6 +432,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--focus); outline:
   box-shadow: 0 8px 32px rgb(20 30 40 / 20%);
 }
 .dialog::backdrop { background: rgb(20 29 38 / 52%); }
+.song-form { display: grid; gap: 13px; margin-top: 4px; }
+.song-form input[type="file"] { height: auto; padding: 8px 10px; font-size: 12px; }
+.song-form .field-note { margin-top: -6px; }
 .dialog-wide { width: min(760px, calc(100vw - 32px)); }
 .dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .dialog > form > p { color: var(--ink-soft); }

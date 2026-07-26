@@ -253,8 +253,12 @@ impl Presentation {
         let size = self.slide_size()?;
         if size != expected_size {
             return Err(Error::InvalidPackage(format!(
-                "incompatible slide dimensions {} × {}; expected {} × {}",
-                size.0, size.1, expected_size.0, expected_size.1
+                "these slides are {} and the service template is {}. \
+                 In PowerPoint choose Design → Slide Size → Custom Slide Size, set the deck to {}, \
+                 then check each slide still looks right before uploading it again",
+                describe_slide_size(size),
+                describe_slide_size(expected_size),
+                describe_slide_size(expected_size),
             )));
         }
         if self.slides.is_empty() {
@@ -1576,6 +1580,30 @@ impl PlaceholderMut<'_> {
         self.presentation.files.insert(part, xml.into_bytes());
         Ok(())
     }
+}
+
+/// Describes a slide size the way PowerPoint's own Slide Size dialog does, so a rejection message
+/// tells someone what to change rather than quoting raw EMU at them.
+fn describe_slide_size((width, height): (u64, u64)) -> String {
+    const EMU_PER_INCH: f64 = 914_400.0;
+    if height == 0 {
+        return format!("{width} × {height}");
+    }
+    let inches = (width as f64 / EMU_PER_INCH, height as f64 / EMU_PER_INCH);
+    // The TWPC template is 1.3335:1 rather than exactly 4:3, and decks saved by different
+    // PowerPoint versions vary in the last digits too, so these are matched loosely.
+    let aspect = width as f64 / height as f64;
+    let ratio = [
+        (4.0 / 3.0, "4:3"),
+        (16.0 / 9.0, "16:9 widescreen"),
+        (16.0 / 10.0, "16:10 widescreen"),
+        (3.0 / 2.0, "3:2"),
+    ]
+    .into_iter()
+    .find(|(target, _)| (aspect - target).abs() < 0.01)
+    .map(|(_, name)| name.to_string())
+    .unwrap_or_else(|| format!("{aspect:.2}:1"));
+    format!("{ratio} ({:.2} × {:.2} inches)", inches.0, inches.1)
 }
 
 fn utf8_part(files: &BTreeMap<String, Vec<u8>>, part: &str) -> Result<String> {
