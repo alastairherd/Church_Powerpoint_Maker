@@ -5,4 +5,11 @@ node_modules/
 example-pptx/
 .env
 .env.local
+.env.example
 envs.txt
+
+# Local AI agent tooling, not part of the project
+.opencode/
+opencode.json
+compat/
+docs/superpowers/
