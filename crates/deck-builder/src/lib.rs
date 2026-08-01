@@ -289,7 +289,13 @@ pub async fn build_deck(
                     set_shape_text(&mut pres, slide, "TextShape 1", title)?;
                     let runs = psalm_runs(&stanza, *show_verse_numbers);
                     set_shape_runs(&mut pres, slide, "TextShape 2", &runs)?;
-                    hide_logo_when_text_reaches_it(&mut pres, slide, "TextShape 2", &runs, 2800)?;
+                    hide_logo_when_text_reaches_it(
+                        &mut pres,
+                        slide,
+                        "TextShape 2",
+                        &runs,
+                        PSALM_FONT_SIZE_HUNDREDTHS_PT,
+                    )?;
                     if index + 1 == count {
                         pres.copy_shape(SEED_SONG_FINAL, "TextBox 4", slide, "Psalm Credits")?;
                         pres.slide_mut(slide)?
@@ -527,17 +533,17 @@ pub fn propose_psalm_groups(stanzas: &[String]) -> Vec<String> {
     let mut current_lines = 0;
     for stanza in stanzas {
         let stanza_lines = estimated_psalm_lines(stanza, characters_per_line);
-        let separator_lines = usize::from(!current.is_empty());
-        if !current.is_empty() && current_lines + separator_lines + stanza_lines > max_lines {
+        if !current.is_empty() && current_lines + 1 + stanza_lines > max_lines {
             groups.push(current);
             current = String::new();
             current_lines = 0;
         }
         if !current.is_empty() {
             current.push_str("\n\n");
+            current_lines += 1;
         }
         current.push_str(stanza);
-        current_lines += separator_lines + stanza_lines;
+        current_lines += stanza_lines;
     }
     if !current.is_empty() {
         groups.push(current);
@@ -546,14 +552,14 @@ pub fn propose_psalm_groups(stanzas: &[String]) -> Vec<String> {
 }
 
 // TextShape 2 in the Psalm seed is 9,683,583 × 4,506,298 EMU. Generated
-// runs use 28pt Arial Black, with 100% paragraph line spacing. These limits
+// runs use 32pt Arial Black, with 100% paragraph line spacing. These limits
 // are derived from that box rather than from an arbitrary stanza count. The
 // 50% average glyph-width and 85/90% safety factors leave room for wide words,
 // verse markers, and PowerPoint's font metrics while still grouping ordinary
 // three- or four-line Psalm paragraphs.
 const PSALM_TEXT_BOX_WIDTH_EMU: u64 = 9_683_583;
 const PSALM_TEXT_BOX_HEIGHT_EMU: u64 = 4_506_298;
-const PSALM_FONT_SIZE_HUNDREDTHS_PT: u64 = 2_800;
+const PSALM_FONT_SIZE_HUNDREDTHS_PT: u32 = 3_200;
 const EMU_PER_POINT: u64 = 12_700;
 const PSALM_AVERAGE_GLYPH_WIDTH_PERCENT: u64 = 50;
 const PSALM_VERTICAL_SAFETY_PERCENT: u64 = 85;
@@ -612,7 +618,7 @@ fn estimated_runs_height_emu(runs: &[Run], shape_width_emu: u64, default_font_si
 }
 
 fn psalm_layout_capacity() -> (usize, usize) {
-    let font_height_emu = PSALM_FONT_SIZE_HUNDREDTHS_PT * EMU_PER_POINT / 100;
+    let font_height_emu = u64::from(PSALM_FONT_SIZE_HUNDREDTHS_PT) * EMU_PER_POINT / 100;
     let natural_lines = PSALM_TEXT_BOX_HEIGHT_EMU / font_height_emu;
     let max_lines = (natural_lines * PSALM_VERTICAL_SAFETY_PERCENT / 100).max(1) as usize;
 
@@ -853,7 +859,7 @@ fn psalm_runs(text: &str, show_verse_numbers: bool) -> Vec<Run> {
         };
         let Some(index) = next else {
             let mut run = Run::plain(remaining)
-                .with_font_size(2800)
+                .with_font_size(PSALM_FONT_SIZE_HUNDREDTHS_PT)
                 .with_text_style("Arial Black", "000000");
             run.underline = underlined;
             marked.push(run);
@@ -861,7 +867,7 @@ fn psalm_runs(text: &str, show_verse_numbers: bool) -> Vec<Run> {
         };
         if index > 0 {
             let mut run = Run::plain(&remaining[..index])
-                .with_font_size(2800)
+                .with_font_size(PSALM_FONT_SIZE_HUNDREDTHS_PT)
                 .with_text_style("Arial Black", "000000");
             run.underline = underlined;
             marked.push(run);
@@ -884,7 +890,7 @@ fn psalm_runs(text: &str, show_verse_numbers: bool) -> Vec<Run> {
             let is_superscript = superscript.is_some();
             if current_superscript.is_some_and(|value| value != is_superscript) {
                 let mut split = Run::plain(std::mem::take(&mut current))
-                    .with_font_size(2800)
+                    .with_font_size(PSALM_FONT_SIZE_HUNDREDTHS_PT)
                     .with_text_style("Arial Black", "000000");
                 split.underline = run.underline;
                 split.superscript = current_superscript.unwrap_or(false);
@@ -895,7 +901,7 @@ fn psalm_runs(text: &str, show_verse_numbers: bool) -> Vec<Run> {
         }
         if !current.is_empty() {
             let mut split = Run::plain(current)
-                .with_font_size(2800)
+                .with_font_size(PSALM_FONT_SIZE_HUNDREDTHS_PT)
                 .with_text_style("Arial Black", "000000");
             split.underline = run.underline;
             split.superscript = current_superscript.unwrap_or(false);
@@ -1256,8 +1262,38 @@ mod tests {
     }
 
     #[test]
+    fn psalm_grouping_allows_more_than_two_short_stanzas_when_they_fit() {
+        let stanzas = vec![
+            "first".to_string(),
+            "second".to_string(),
+            "third".to_string(),
+            "fourth".to_string(),
+        ];
+
+        let pages = propose_psalm_groups(&stanzas);
+
+        assert_eq!(pages, vec![stanzas.join("\n\n")]);
+    }
+
+    #[test]
+    fn psalm_grouping_rolls_a_whole_stanza_when_the_pair_does_not_fit() {
+        let first = (1..=5)
+            .map(|line| format!("first stanza line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let second = (1..=5)
+            .map(|line| format!("second stanza line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let pages = propose_psalm_groups(&[first.clone(), second.clone()]);
+
+        assert_eq!(pages, vec![first, second]);
+    }
+
+    #[test]
     fn psalm_grouping_never_splits_an_oversized_stanza() {
-        let oversized = (1..=9)
+        let oversized = (1..=10)
             .map(|line| format!("line {line}"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -1269,11 +1305,16 @@ mod tests {
     }
 
     #[test]
-    fn psalm_23_uses_readable_two_stanza_groups() {
+    fn psalm_23_rolls_stanzas_according_to_32pt_capacity() {
         let psalm = Psalm::find("Psalm 23:1-6").expect("Psalm 23 exists");
         let pages = propose_psalm_groups(&psalm.stanzas);
 
-        assert_eq!(pages.len(), 3);
+        assert_eq!(pages.len(), 4);
+        assert_eq!(pages.join("\n\n"), psalm.stanzas.join("\n\n"));
+        assert_eq!(
+            pages[3],
+            format!("{}\n\n{}", psalm.stanzas[3], psalm.stanzas[4])
+        );
         assert!(pages.iter().all(|page| page.lines().count() <= 7));
     }
 
@@ -1284,7 +1325,7 @@ mod tests {
             true,
         );
         assert!(runs.iter().all(
-            |run| run.font_size == Some(2800) && run.typeface.as_deref() == Some("Arial Black")
+            |run| run.font_size == Some(3200) && run.typeface.as_deref() == Some("Arial Black")
         ));
         assert!(runs.iter().any(|run| run.superscript && run.text == "4"));
         assert!(runs

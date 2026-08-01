@@ -224,6 +224,9 @@ async fn generated_psalm_runs_specify_arial_black_for_all_script_ranges() {
     let first_psalm_slide = pres.slide_xml(0).expect("first Psalm slide XML");
     let first_psalm_body = named_shape_xml(&first_psalm_slide, "TextShape 2");
 
+    assert!(first_psalm_body.contains("sz=\"3200\""));
+    assert!(!first_psalm_body.contains("sz=\"2800\""));
+
     for script in ["latin", "ea", "cs"] {
         assert!(
             first_psalm_body.contains(&format!("<a:{script} typeface=\"Arial Black\"/>")),
@@ -431,8 +434,9 @@ async fn generated_content_keeps_template_hierarchy_and_safe_sizing() {
     assert!(amen.contains("<a:schemeClr val=\"accent1\"/>") && amen.contains("b=\"1\""));
 
     let psalm = xml.iter().find(|slide| slide.contains("seven")).unwrap();
-    assert!(psalm.contains("sz=\"2800\""));
-    assert!(!psalm.contains("sz=\"3200\"") && !psalm.contains("sz=\"2600\""));
+    let psalm_body = named_shape_xml(psalm, "TextShape 2");
+    assert!(psalm_body.contains("sz=\"3200\""));
+    assert!(!psalm_body.contains("sz=\"2800\"") && !psalm_body.contains("sz=\"2600\""));
     assert!(psalm.contains("typeface=\"Arial Black\""));
     assert!(psalm.contains("<a:off x=\"6724800\" y=\"6080400\"/>"));
     let teaching = xml
