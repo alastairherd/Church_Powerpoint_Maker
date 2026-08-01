@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createEditorController, SAVE_DEBOUNCE_MS } from '../crates/server/static/editor-controller.js';
+import { createEditorController, PREPARE_IDLE_MS, SAVE_DEBOUNCE_MS } from '../crates/server/static/editor-controller.js';
 import { deferred, jsonResponse, makeService } from './helpers/editor-fixture.js';
 
 function controllerWithFetch(fetchRequest, overrides = {}) {
@@ -16,6 +16,58 @@ function controllerWithFetch(fetchRequest, overrides = {}) {
 }
 
 describe('editor controller seam', () => {
+  it('prepares only the exact revision left idle after a successful autosave', async () => {
+    const service = makeService();
+    const callbacks = [];
+    const requests = [];
+    const timers = {
+      setTimeout: vi.fn((callback, delay) => {
+        callbacks.push({ callback, delay });
+        return callbacks.length;
+      }),
+      clearTimeout: vi.fn(),
+    };
+    const controller = controllerWithFetch(async (url, options = {}) => {
+      requests.push({ url, options });
+      if (url.endsWith('/autosave')) return jsonResponse({ ...service, revision: 5 });
+      if (url.endsWith('/prepare')) return jsonResponse({ status: 'preparing', revision: 5 }, { status: 202 });
+      throw new Error(`unexpected request to ${url}`);
+    }, { timers });
+
+    await controller.loadService(service);
+    controller.updateComponent('reading-1', component => { component.reference = 'John 3:16'; });
+    await controller.saveNow();
+
+    const scheduled = callbacks.find(timer => timer.delay === PREPARE_IDLE_MS);
+    expect(scheduled).toBeDefined();
+    expect(controller.getState()).toMatchObject({ status: 'Saved', editGeneration: 1, savedGeneration: 1 });
+    scheduled.callback();
+    await vi.waitFor(() => expect(requests.some(({ url }) => url.endsWith('/prepare'))).toBe(true));
+    const prepare = requests.find(({ url }) => url.endsWith('/prepare'));
+    expect(prepare).toEqual({
+      url: '/api/services/service-1/prepare',
+      options: { method: 'POST', body: JSON.stringify({ revision: 5 }) },
+    });
+
+    controller.updateComponent('reading-1', component => { component.reference = 'John 3:17'; });
+    scheduled.callback();
+    await Promise.resolve();
+    expect(requests.filter(({ url }) => url.endsWith('/prepare'))).toHaveLength(1);
+  });
+
+  it('does not schedule preparation after a failed autosave', async () => {
+    const service = makeService();
+    const timers = { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() };
+    const controller = controllerWithFetch(
+      async () => new Response(JSON.stringify({ error: 'offline' }), { status: 503 }),
+      { timers },
+    );
+    await controller.loadService(service);
+    controller.updateComponent('reading-1', component => { component.reference = 'John 3:16'; });
+    await expect(controller.saveNow()).rejects.toThrow('offline');
+    expect(timers.setTimeout.mock.calls.some(([, delay]) => delay === PREPARE_IDLE_MS)).toBe(false);
+  });
+
   it('exposes canonical service state and generation counters', () => {
     const controller = createEditorController({
       request: async () => jsonResponse({}),

@@ -25,9 +25,11 @@ use serde_json::json;
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::{MemoryObjectStore, ObjectStore, PutCondition, StoreError, StoredObject};
+use tokio::sync::watch;
 
 pub(crate) const PPTX_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.presentationml.presentation";
@@ -36,6 +38,14 @@ const JSON_CONTENT_TYPE: &str = "application/json";
 const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 const LOGIN_ATTEMPTS: usize = 8;
 const GENERATED_DECK_RETENTION_DAYS: i64 = 730;
+const PREPARED_DECK_TTL: Duration = Duration::from_secs(20 * 60);
+const PREPARED_DECK_LIMIT: usize = 4;
+const PREPARED_DECK_BYTE_LIMIT: usize = 64 * 1024 * 1024;
+const PREPARE_QUEUE_LIMIT: usize = 4;
+const PREPARED_DECK_JOIN_GRACE: Duration = Duration::from_millis(350);
+// The template is embedded in the process. Bump this if a future deployment can swap templates
+// without restarting, so bytes produced under the old template can never be reused.
+const TEMPLATE_GENERATION: u32 = 1;
 
 #[derive(Clone)]
 pub struct AppConfig {
@@ -76,6 +86,138 @@ pub(crate) struct AppState {
     config: AppConfig,
     login_limiter: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
     next_id: Arc<AtomicU64>,
+    prepared_decks: Arc<Mutex<PreparedDeckCache>>,
+    prepare_tx: SyncSender<PrepareJob>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct PreparedDeckKey {
+    service_id: String,
+    service_revision: u64,
+    settings_version: u64,
+    template_generation: u32,
+}
+
+impl PreparedDeckKey {
+    fn new(service: &ServiceRecord, settings: &GlobalSettingsVersion) -> Self {
+        Self {
+            service_id: service.id.clone(),
+            service_revision: service.revision,
+            settings_version: settings.version,
+            template_generation: TEMPLATE_GENERATION,
+        }
+    }
+}
+
+#[derive(Clone)]
+enum PreparationOutcome {
+    Building,
+    Ready(Arc<[u8]>),
+    Failed,
+}
+
+struct PreparedDeckEntry {
+    bytes: Arc<[u8]>,
+    created_at: Instant,
+}
+
+#[derive(Default)]
+struct PreparedDeckCache {
+    ready: HashMap<PreparedDeckKey, PreparedDeckEntry>,
+    in_flight: HashMap<PreparedDeckKey, watch::Receiver<PreparationOutcome>>,
+    latest_for_service: HashMap<String, PreparedDeckKey>,
+    total_bytes: usize,
+}
+
+impl PreparedDeckCache {
+    fn prune(&mut self, now: Instant) {
+        let expired = self
+            .ready
+            .iter()
+            .filter(|(_, entry)| {
+                now.saturating_duration_since(entry.created_at) > PREPARED_DECK_TTL
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in expired {
+            self.remove_ready(&key);
+        }
+    }
+
+    fn get_ready(&mut self, key: &PreparedDeckKey) -> Option<Arc<[u8]>> {
+        self.prune(Instant::now());
+        self.ready.get(key).map(|entry| entry.bytes.clone())
+    }
+
+    fn insert_ready(&mut self, key: PreparedDeckKey, bytes: Arc<[u8]>) {
+        self.prune(Instant::now());
+        let older_for_service = self
+            .ready
+            .keys()
+            .filter(|candidate| candidate.service_id == key.service_id && **candidate != key)
+            .cloned()
+            .collect::<Vec<_>>();
+        for candidate in older_for_service {
+            self.remove_ready(&candidate);
+        }
+        if bytes.len() > PREPARED_DECK_BYTE_LIMIT {
+            return;
+        }
+        if let Some(previous) = self.ready.remove(&key) {
+            self.total_bytes = self.total_bytes.saturating_sub(previous.bytes.len());
+        }
+        while self.ready.len() >= PREPARED_DECK_LIMIT
+            || self.total_bytes.saturating_add(bytes.len()) > PREPARED_DECK_BYTE_LIMIT
+        {
+            let Some(oldest) = self
+                .ready
+                .iter()
+                .min_by_key(|(_, entry)| entry.created_at)
+                .map(|(candidate, _)| candidate.clone())
+            else {
+                break;
+            };
+            self.remove_ready(&oldest);
+        }
+        self.total_bytes = self.total_bytes.saturating_add(bytes.len());
+        self.ready.insert(
+            key,
+            PreparedDeckEntry {
+                bytes,
+                created_at: Instant::now(),
+            },
+        );
+    }
+
+    fn remove_ready(&mut self, key: &PreparedDeckKey) {
+        if let Some(entry) = self.ready.remove(key) {
+            self.total_bytes = self.total_bytes.saturating_sub(entry.bytes.len());
+        }
+    }
+
+    fn is_latest(&self, key: &PreparedDeckKey) -> bool {
+        self.latest_for_service.get(&key.service_id) == Some(key)
+    }
+
+    fn finish(&mut self, key: &PreparedDeckKey) {
+        self.in_flight.remove(key);
+        if self.latest_for_service.get(&key.service_id) == Some(key) {
+            self.latest_for_service.remove(&key.service_id);
+        }
+    }
+}
+
+struct PrepareJob {
+    key: PreparedDeckKey,
+    service: ServiceRecord,
+    settings: GlobalSettingsVersion,
+    outcome: watch::Sender<PreparationOutcome>,
+}
+
+struct PreparationWorkerState {
+    sources: Arc<dyn Sources>,
+    store: Arc<dyn ObjectStore>,
+    prepared_decks: Arc<Mutex<PreparedDeckCache>>,
 }
 
 struct ServiceSources {
@@ -107,13 +249,26 @@ impl Sources for ServiceSources {
 }
 
 pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppConfig) -> Router {
+    let prepared_decks = Arc::new(Mutex::new(PreparedDeckCache::default()));
+    let (prepare_tx, prepare_rx) = mpsc::sync_channel(PREPARE_QUEUE_LIMIT);
     let state = AppState {
         sources,
         store,
         config,
         login_limiter: Arc::new(Mutex::new(HashMap::new())),
         next_id: Arc::new(AtomicU64::new(1)),
+        prepared_decks,
+        prepare_tx,
     };
+    let worker_state = PreparationWorkerState {
+        sources: state.sources.clone(),
+        store: state.store.clone(),
+        prepared_decks: state.prepared_decks.clone(),
+    };
+    std::thread::Builder::new()
+        .name("deck-preparation".to_string())
+        .spawn(move || prepare_worker(worker_state, prepare_rx))
+        .expect("could not start background deck preparation worker");
 
     let protected = Router::new()
         .route("/", get(builder_page))
@@ -139,6 +294,7 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
         )
         .route("/api/services/:id/restore", post(restore_service))
         .route("/api/services/:id/autosave", put(update_service))
+        .route("/api/services/:id/prepare", post(prepare_service))
         .route("/api/services/:id/generate", post(generate_service))
         .route("/api/services/:id/history", get(service_history))
         .route("/api/generated", get(generated_decks))
@@ -526,6 +682,11 @@ async fn list_services(
 ) -> Result<Json<Vec<ServiceRecord>>, AppError> {
     let mut services = Vec::new();
     for key in state.store.list("entities/services/").await? {
+        // The same prefix also contains every generated revision. Fetching those one by one from
+        // R2 only to fail ServiceRecord deserialization made builder startup slower over time.
+        if !is_current_service_key(&key) {
+            continue;
+        }
         if let Ok(object) = state.store.get(&key).await {
             if let Ok(service) = serde_json::from_slice::<ServiceRecord>(&object.bytes) {
                 services.push(service);
@@ -574,6 +735,7 @@ async fn update_service(
         PutCondition::IfMatch(object.etag),
     )
     .await?;
+    invalidate_prepared_service(&state, &id);
     json_with_etag(StatusCode::OK, &incoming, &stored.etag)
 }
 
@@ -609,7 +771,255 @@ async fn change_service_status(
         PutCondition::IfMatch(object.etag),
     )
     .await?;
+    invalidate_prepared_service(state, id);
     Ok(Json(service))
+}
+
+#[derive(Deserialize)]
+struct PrepareDeckRequest {
+    revision: u64,
+}
+
+#[derive(Serialize)]
+struct PrepareDeckResponse {
+    status: &'static str,
+    revision: u64,
+}
+
+async fn prepare_service(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<PrepareDeckRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let (service, _) = load_service(&state, &id).await?;
+    if request.revision != service.revision {
+        return Err(AppError::conflict(
+            "this service changed before background preparation could begin",
+        ));
+    }
+    let settings = load_settings(&state).await?;
+    let key = PreparedDeckKey::new(&service, &settings);
+    let (outcome, receiver) = watch::channel(PreparationOutcome::Building);
+
+    let previous_latest = {
+        let mut cache = prepared_cache(&state.prepared_decks)?;
+        if cache.get_ready(&key).is_some() {
+            return Ok((
+                StatusCode::OK,
+                Json(PrepareDeckResponse {
+                    status: "ready",
+                    revision: request.revision,
+                }),
+            ));
+        }
+        if cache.in_flight.contains_key(&key) {
+            return Ok((
+                StatusCode::ACCEPTED,
+                Json(PrepareDeckResponse {
+                    status: "preparing",
+                    revision: request.revision,
+                }),
+            ));
+        }
+        cache.in_flight.insert(key.clone(), receiver);
+        cache
+            .latest_for_service
+            .insert(key.service_id.clone(), key.clone())
+    };
+
+    let job = PrepareJob {
+        key: key.clone(),
+        service,
+        settings,
+        outcome,
+    };
+    if state.prepare_tx.try_send(job).is_err() {
+        let mut cache = prepared_cache(&state.prepared_decks)?;
+        cache.in_flight.remove(&key);
+        if cache.latest_for_service.get(&key.service_id) == Some(&key) {
+            match previous_latest {
+                Some(previous) if cache.in_flight.contains_key(&previous) => {
+                    cache
+                        .latest_for_service
+                        .insert(key.service_id.clone(), previous);
+                }
+                _ => {
+                    cache.latest_for_service.remove(&key.service_id);
+                }
+            }
+        }
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(PrepareDeckResponse {
+                status: "busy",
+                revision: request.revision,
+            }),
+        ));
+    }
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(PrepareDeckResponse {
+            status: "preparing",
+            revision: request.revision,
+        }),
+    ))
+}
+
+fn prepare_worker(state: PreparationWorkerState, jobs: Receiver<PrepareJob>) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("could not start the deck preparation runtime");
+    while let Ok(job) = jobs.recv() {
+        runtime.block_on(process_prepare_job(&state, job));
+    }
+
+    // A closed worker means no queued receiver should leave a Generate request waiting forever.
+    if let Ok(mut cache) = prepared_cache(&state.prepared_decks) {
+        cache.in_flight.clear();
+        cache.latest_for_service.clear();
+    }
+}
+
+async fn process_prepare_job(state: &PreparationWorkerState, job: PrepareJob) {
+    let should_build = prepared_cache(&state.prepared_decks)
+        .map(|cache| cache.is_latest(&job.key))
+        .unwrap_or(false);
+    if !should_build {
+        let _ = job.outcome.send(PreparationOutcome::Failed);
+        if let Ok(mut cache) = prepared_cache(&state.prepared_decks) {
+            cache.finish(&job.key);
+        }
+        return;
+    }
+
+    let result =
+        render_service_deck(&state.sources, &state.store, &job.service, &job.settings).await;
+    let still_current = if result.is_ok() {
+        preparation_is_current(&state.store, &state.prepared_decks, &job.key).await
+    } else {
+        false
+    };
+
+    match result {
+        Ok(bytes) if still_current => {
+            let bytes = Arc::<[u8]>::from(bytes);
+            let _ = job.outcome.send(PreparationOutcome::Ready(bytes.clone()));
+            if let Ok(mut cache) = prepared_cache(&state.prepared_decks) {
+                if cache.is_latest(&job.key) {
+                    cache.insert_ready(job.key.clone(), bytes);
+                }
+                cache.finish(&job.key);
+            }
+        }
+        _ => {
+            let _ = job.outcome.send(PreparationOutcome::Failed);
+            if let Ok(mut cache) = prepared_cache(&state.prepared_decks) {
+                cache.finish(&job.key);
+            }
+        }
+    }
+}
+
+async fn preparation_is_current(
+    store: &Arc<dyn ObjectStore>,
+    prepared_decks: &Arc<Mutex<PreparedDeckCache>>,
+    key: &PreparedDeckKey,
+) -> bool {
+    let still_latest = prepared_cache(prepared_decks)
+        .map(|cache| cache.is_latest(key))
+        .unwrap_or(false);
+    if !still_latest {
+        return false;
+    }
+    let Ok(service_object) = store.get(&service_key(&key.service_id)).await else {
+        return false;
+    };
+    let Ok(service) = serde_json::from_slice::<ServiceRecord>(&service_object.bytes) else {
+        return false;
+    };
+    let Ok(settings_object) = store.get("entities/settings/current.json").await else {
+        return false;
+    };
+    let Ok(settings) = serde_json::from_slice::<GlobalSettingsVersion>(&settings_object.bytes)
+    else {
+        return false;
+    };
+    service.revision == key.service_revision && settings.version == key.settings_version
+}
+
+fn prepared_cache(
+    prepared_decks: &Arc<Mutex<PreparedDeckCache>>,
+) -> Result<std::sync::MutexGuard<'_, PreparedDeckCache>, AppError> {
+    prepared_decks
+        .lock()
+        .map_err(|_| AppError::internal("background deck cache became unavailable"))
+}
+
+fn invalidate_prepared_service(state: &AppState, id: &str) {
+    let Ok(mut cache) = prepared_cache(&state.prepared_decks) else {
+        return;
+    };
+    cache.latest_for_service.remove(id);
+    let ready = cache
+        .ready
+        .keys()
+        .filter(|key| key.service_id == id)
+        .cloned()
+        .collect::<Vec<_>>();
+    for key in ready {
+        cache.remove_ready(&key);
+    }
+}
+
+fn invalidate_all_prepared_decks(state: &AppState) {
+    let Ok(mut cache) = prepared_cache(&state.prepared_decks) else {
+        return;
+    };
+    cache.ready.clear();
+    cache.latest_for_service.clear();
+    cache.total_bytes = 0;
+}
+
+async fn render_service_deck(
+    upstream: &Arc<dyn Sources>,
+    store: &Arc<dyn ObjectStore>,
+    service: &ServiceRecord,
+    settings: &GlobalSettingsVersion,
+) -> Result<Vec<u8>, AppError> {
+    let sources = ServiceSources {
+        upstream: upstream.clone(),
+        store: store.clone(),
+    };
+    build_deck(service, &sources, &settings.ccli_licence_number)
+        .await
+        .map_err(|error| AppError::internal(format!("could not build service deck: {error}")))
+}
+
+async fn prepared_deck_for_generation(
+    state: &AppState,
+    key: &PreparedDeckKey,
+) -> Option<Arc<[u8]>> {
+    let mut receiver = {
+        let mut cache = prepared_cache(&state.prepared_decks).ok()?;
+        if let Some(bytes) = cache.get_ready(key) {
+            return Some(bytes);
+        }
+        cache.in_flight.get(key).cloned()
+    }?;
+
+    loop {
+        let outcome = receiver.borrow().clone();
+        match outcome {
+            PreparationOutcome::Building => {}
+            PreparationOutcome::Ready(bytes) => return Some(bytes),
+            PreparationOutcome::Failed => return None,
+        }
+        if receiver.changed().await.is_err() {
+            return None;
+        }
+    }
 }
 
 async fn generate_service(
@@ -619,13 +1029,22 @@ async fn generate_service(
 ) -> Result<Response, AppError> {
     let (mut service, object) = load_service(&state, &id).await?;
     let settings = load_settings(&state).await?;
-    let sources = ServiceSources {
-        upstream: state.sources.clone(),
-        store: state.store.clone(),
+    let cache_key = PreparedDeckKey::new(&service, &settings);
+    let prepared = tokio::time::timeout(
+        PREPARED_DECK_JOIN_GRACE,
+        prepared_deck_for_generation(&state, &cache_key),
+    )
+    .await
+    .ok()
+    .flatten();
+    let (bytes, preparation_status) = if let Some(prepared) = prepared {
+        (prepared.as_ref().to_vec(), "hit")
+    } else {
+        (
+            render_service_deck(&state.sources, &state.store, &service, &settings).await?,
+            "miss",
+        )
     };
-    let bytes = build_deck(&service, &sources, &settings.ccli_licence_number)
-        .await
-        .map_err(|error| AppError::internal(format!("could not build service deck: {error}")))?;
     let revision = state
         .store
         .list(&format!("generated/services/{id}/revisions/"))
@@ -685,6 +1104,10 @@ async fn generate_service(
             deck_filename(&service, revision)
         ))
         .map_err(|error| AppError::internal(error.to_string()))?,
+    );
+    response.headers_mut().insert(
+        "x-deck-preparation",
+        HeaderValue::from_static(preparation_status),
     );
     Ok(response)
 }
@@ -994,6 +1417,7 @@ async fn update_settings(
         PutCondition::IfMatch(object.etag),
     )
     .await?;
+    invalidate_all_prepared_decks(&state);
     Ok(Json(settings))
 }
 
@@ -1237,6 +1661,11 @@ fn service_key(id: &str) -> String {
     format!("entities/services/{id}.json")
 }
 
+fn is_current_service_key(key: &str) -> bool {
+    key.strip_prefix("entities/services/")
+        .is_some_and(|filename| !filename.contains('/') && filename.ends_with(".json"))
+}
+
 async fn load_service(
     state: &AppState,
     id: &str,
@@ -1328,5 +1757,54 @@ impl From<StoreError> for AppError {
             ),
             StoreError::Unavailable(message) => Self::internal(message),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        is_current_service_key, PreparedDeckCache, PreparedDeckEntry, PreparedDeckKey,
+        PREPARED_DECK_LIMIT, PREPARED_DECK_TTL, TEMPLATE_GENERATION,
+    };
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn service_listing_skips_generated_revision_metadata() {
+        assert!(is_current_service_key("entities/services/svc-123.json"));
+        assert!(!is_current_service_key(
+            "entities/services/svc-123/revisions/7.json"
+        ));
+        assert!(!is_current_service_key("entities/services/svc-123.pptx"));
+    }
+
+    #[test]
+    fn prepared_deck_cache_is_bounded_and_prunes_expired_entries() {
+        let mut cache = PreparedDeckCache::default();
+        for revision in 0..=PREPARED_DECK_LIMIT as u64 {
+            cache.insert_ready(
+                PreparedDeckKey {
+                    service_id: format!("service-{revision}"),
+                    service_revision: revision,
+                    settings_version: 1,
+                    template_generation: TEMPLATE_GENERATION,
+                },
+                Arc::<[u8]>::from(vec![revision as u8; 8]),
+            );
+        }
+        assert_eq!(cache.ready.len(), PREPARED_DECK_LIMIT);
+        assert_eq!(cache.total_bytes, PREPARED_DECK_LIMIT * 8);
+
+        let expired_key = cache.ready.keys().next().unwrap().clone();
+        cache.ready.insert(
+            expired_key.clone(),
+            PreparedDeckEntry {
+                bytes: Arc::<[u8]>::from(vec![0; 8]),
+                created_at: Instant::now() - PREPARED_DECK_TTL - Duration::from_secs(1),
+            },
+        );
+        assert!(cache.get_ready(&expired_key).is_none());
+        assert_eq!(cache.ready.len(), PREPARED_DECK_LIMIT - 1);
+        assert_eq!(cache.total_bytes, (PREPARED_DECK_LIMIT - 1) * 8);
     }
 }

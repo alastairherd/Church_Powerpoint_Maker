@@ -11,6 +11,52 @@ confession, the assurance of forgiveness, the Lord's Prayer, the creed — is fi
 in automatically. Pressing Generate produces a `.pptx` built from the
 TWPC-branded template, ready to open and project.
 
+## Editor and generation behaviour
+
+The editor autosaves without rebuilding the whole page on every keystroke. Counts
+and validation are batched, component fields keep their focus while staff type,
+and drag-and-drop ordering avoids unnecessary DOM work. Psalm, scripture and
+teaching lookups are read-only until the corresponding Load button is pressed;
+the app may prefetch them when a staff member focuses or points at that action so
+the explicit load feels faster. Shared prefetched requests still retain the
+normal ten-second loader timeout.
+
+The song picker loads the complete matching set into a bounded, scrollable list.
+There is no hidden fourteen-song result limit.
+
+Psalm body text is authored at 32pt. Automatic Psalm pagination greedily keeps
+whole source stanzas together according to the available rendered height. Two
+typical stanzas are the design target, but three or more short stanzas may share
+a slide when they fit. A stanza rolls intact to the next slide when adding it
+would overflow; an individually oversized stanza is kept whole so no text is
+silently lost. Staff-edited slide breaks remain authoritative.
+
+### Background deck preparation
+
+After an autosave has remained unchanged for 3.5 seconds, the server may prepare
+the exact saved revision in the background. This is an optimisation only:
+
+- preparation runs on one dedicated worker and uses a bounded queue;
+- completed decks are cached in memory for up to 20 minutes, with a maximum of
+  four decks or 64 MiB;
+- cache identity includes the service ID and revision, global settings version,
+  and embedded-template generation;
+- a later edit or settings change invalidates the corresponding prepared work;
+- preparation never marks a service complete, publishes a deck, or writes to
+  generated history;
+- Generate briefly checks for the exact prepared result, then falls back to the
+  normal foreground build instead of waiting behind the background queue.
+
+Successful generation still performs all permanent writes in one place: it
+stores the PPTX, records an immutable service snapshot in generated history, and
+marks the live service complete. The response header `x-deck-preparation` is
+`hit` when prepared bytes were reused and `miss` when a foreground build was
+needed.
+
+From the Generated PowerPoints page, **Use as starting point** restores the
+immutable settings saved with that generated revision into a new draft. It does
+not modify the original service or its generated history.
+
 ## Running it
 
 The server needs a few things from the environment:
@@ -39,10 +85,12 @@ cargo test --workspace        # Rust: unit tests and HTTP endpoint tests
 npm test                      # frontend: vitest under jsdom
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
+bash scripts/validate-openxml.sh  # representative deck + Microsoft Open XML SDK
 ```
 
-The last two are enforced by CI; `npm test` is not, so run it locally when you
-touch anything in `crates/server/static/`.
+Formatting and Clippy are enforced by CI. `npm test` is not, so run it locally
+when you touch anything in `crates/server/static/`. Run the Open XML validator
+whenever presentation generation or package structure changes.
 
 **Static assets and JSON data are compiled into the binary** with `include_str!`
 and `include_bytes!`. Editing a file under `crates/server/static/`,
@@ -77,7 +125,12 @@ reachable master must be registered, and each master must own its theme part.
 Real PowerPoint is the only trustworthy check that a generated deck opens. If you
 are changing anything in `pptx-template`, read
 [`docs/powerpoint-repair-postmortem.md`](docs/powerpoint-repair-postmortem.md)
-first.
+first. For presentation-generation changes, validate a representative deck with
+`scripts/validate-openxml.sh` and, where PowerPoint is available, open it there
+and inspect representative dense slides as the final smoke test. Running Office
+inside Docker is not the expected workflow; the Open XML SDK container provides
+schema validation, while a licensed desktop PowerPoint installation remains the
+application-level check.
 
 ## Conventions
 

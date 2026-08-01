@@ -13,6 +13,80 @@ const DEFAULT_TIMERS = {
   clearInterval: globalThis.clearInterval.bind(globalThis),
 };
 
+export function createGetRequestCache(request, {
+  ttlMs = 5 * 60 * 1_000,
+  maxEntries = 64,
+  now = () => Date.now(),
+} = {}) {
+  const entries = new Map();
+
+  function remove(url, entry) {
+    if (entries.get(url) === entry) entries.delete(url);
+  }
+
+  function prune() {
+    const currentTime = now();
+    for (const [url, entry] of entries) {
+      if (entry.expiresAt <= currentTime) entries.delete(url);
+    }
+    while (entries.size >= Math.max(1, maxEntries)) {
+      entries.delete(entries.keys().next().value);
+    }
+  }
+
+  function responseForConsumer(promise, signal) {
+    if (!signal) return promise.then(response => response.clone());
+    if (signal.aborted) {
+      const error = new Error('The request was aborted.');
+      error.name = 'AbortError';
+      return Promise.reject(error);
+    }
+    return new Promise((resolve, reject) => {
+      const abort = () => {
+        const error = new Error('The request was aborted.');
+        error.name = 'AbortError';
+        reject(error);
+      };
+      signal.addEventListener('abort', abort, { once: true });
+      promise.then(response => {
+        signal.removeEventListener('abort', abort);
+        resolve(response.clone());
+      }, error => {
+        signal.removeEventListener('abort', abort);
+        reject(error);
+      });
+    });
+  }
+
+  function get(url, { signal } = {}) {
+    const existing = entries.get(url);
+    if (existing && existing.expiresAt > now()) {
+      return responseForConsumer(existing.promise, signal);
+    }
+    if (existing) entries.delete(url);
+    prune();
+    const entry = { expiresAt: Number.POSITIVE_INFINITY, promise: null };
+    entry.promise = Promise.resolve()
+      .then(() => request(url))
+      .then(response => {
+        if (response.ok) entry.expiresAt = now() + ttlMs;
+        else remove(url, entry);
+        return response;
+      }, error => {
+        remove(url, entry);
+        throw error;
+      });
+    entries.set(url, entry);
+    return responseForConsumer(entry.promise, signal);
+  }
+
+  function prefetch(url) {
+    return get(url).then(() => undefined).catch(() => undefined);
+  }
+
+  return { get, prefetch };
+}
+
 export function createEditorApp({
   document: doc = globalThis.document,
   request: injectedRequest,
@@ -20,6 +94,11 @@ export function createEditorApp({
   timers = DEFAULT_TIMERS,
   confirmImpl = globalThis.confirm?.bind(globalThis) || (() => true),
   locationImpl = doc.defaultView?.location,
+  scheduleFrame = callback => {
+    const frame = doc.defaultView?.requestAnimationFrame;
+    if (frame) return frame.call(doc.defaultView, callback);
+    return globalThis.queueMicrotask(callback);
+  },
 } = {}) {
   const ui = Object.fromEntries([
     'service-name', 'service-date', 'service-preset', 'service-heading', 'crumb-name',
@@ -35,6 +114,10 @@ export function createEditorApp({
   let toastTimer = null;
   let booted = false;
   let generationPromise = null;
+  let derivedRenderPending = false;
+  let draggedOrderItem = null;
+  let lastOrderDragTarget = null;
+  let lastOrderDragBefore = null;
   const generationLabels = new Map();
 
   async function request(url, options = {}) {
@@ -54,6 +137,17 @@ export function createEditorApp({
     return response;
   }
 
+  const getRequests = createGetRequestCache(url => request(url));
+
+  function prefetchOnIntent(element, urlForCurrentState) {
+    const prefetch = () => {
+      const url = urlForCurrentState();
+      if (url) void getRequests.prefetch(url);
+    };
+    element.addEventListener('pointerenter', prefetch);
+    element.addEventListener('focus', prefetch);
+  }
+
   function today() {
     const date = new Date();
     date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
@@ -71,8 +165,13 @@ export function createEditorApp({
   function setSaveState(kind, message) {
     if (!ui['save-state']) return;
     const stateClass = { Unsaved: 'saving', Saving: 'saving', Saved: '', Failed: 'error' }[kind] || '';
-    ui['save-state'].className = `save-state ${stateClass}`;
+    const className = `save-state ${stateClass}`;
+    if (ui['save-state'].dataset.state === kind
+      && ui['save-state'].className === className
+      && ui['save-state'].textContent === kind) return;
+    ui['save-state'].className = className;
     ui['save-state'].replaceChildren(doc.createElement('span'), doc.createTextNode(kind));
+    ui['save-state'].dataset.state = kind;
   }
 
   function setSaveHelp(message) {
@@ -131,11 +230,24 @@ export function createEditorApp({
 
   function renderAll() {
     if (!controller.getService()) return;
+    // A full render already refreshes the derived panels. Any queued frame can become a no-op.
+    derivedRenderPending = false;
     renderServiceFields();
     renderOrder();
     renderEditor();
     updateCounts();
     renderValidation();
+  }
+
+  function scheduleDerivedRender() {
+    if (derivedRenderPending) return;
+    derivedRenderPending = true;
+    scheduleFrame(() => {
+      if (!derivedRenderPending) return;
+      derivedRenderPending = false;
+      updateCounts();
+      renderValidation();
+    });
   }
 
   function renderOrder() {
@@ -175,14 +287,30 @@ export function createEditorApp({
       actions.append(duplicate, remove);
       item.append(handle, main, actions);
 
-      item.addEventListener('dragstart', () => item.classList.add('dragging'));
-      item.addEventListener('dragend', () => item.classList.remove('dragging'));
+      item.addEventListener('dragstart', () => {
+        draggedOrderItem = item;
+        lastOrderDragTarget = null;
+        lastOrderDragBefore = null;
+        item.classList.add('dragging');
+      });
+      item.addEventListener('dragend', () => {
+        item.classList.remove('dragging');
+        draggedOrderItem = null;
+        lastOrderDragTarget = null;
+        lastOrderDragBefore = null;
+      });
       item.addEventListener('dragover', event => {
         event.preventDefault();
-        const dragging = ui['component-list'].querySelector('.dragging');
-        if (dragging && dragging !== item) {
+        if (draggedOrderItem && draggedOrderItem !== item) {
           const box = item.getBoundingClientRect();
-          ui['component-list'].insertBefore(dragging, event.clientY < box.top + box.height / 2 ? item : item.nextSibling);
+          const before = event.clientY < box.top + box.height / 2;
+          if (lastOrderDragTarget === item && lastOrderDragBefore === before) return;
+          lastOrderDragTarget = item;
+          lastOrderDragBefore = before;
+          const anchor = before ? item : item.nextSibling;
+          if (anchor !== draggedOrderItem && draggedOrderItem.nextSibling !== anchor) {
+            ui['component-list'].insertBefore(draggedOrderItem, anchor);
+          }
         }
       });
       ui['component-list'].append(item);
@@ -200,14 +328,23 @@ export function createEditorApp({
 
   function syncDraggedOrder() {
     const order = [...ui['component-list'].children].map(item => item.dataset.id);
+    const positions = new Map(order.map((id, index) => [id, index]));
+    draggedOrderItem = null;
+    lastOrderDragTarget = null;
+    lastOrderDragBefore = null;
     controller.updateService(service => {
-      service.components.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+      service.components.sort((a, b) => positions.get(a.id) - positions.get(b.id));
     }, 'structural');
   }
 
   function selectComponent(id) {
+    const previousId = controller.getState().selectedId;
+    if (previousId === id) return;
     controller.selectComponent(id);
-    renderOrder();
+    for (const item of ui['component-list']?.children || []) {
+      if (item.dataset.id === previousId) item.classList.remove('selected');
+      if (item.dataset.id === id) item.classList.add('selected');
+    }
     renderEditor();
     const panel = ui['editor-panel'];
     if (panel) {
@@ -230,21 +367,19 @@ export function createEditorApp({
   function duplicateComponent(index) {
     const copy = structuredClone(controller.getService().components[index]);
     copy.id = `component-${Date.now().toString(36)}`;
+    controller.selectComponent(copy.id);
     controller.updateService(service => {
       service.components.splice(index + 1, 0, copy);
     }, 'structural');
-    controller.selectComponent(copy.id);
-    renderAll();
   }
 
   function removeComponent(index) {
     const service = controller.getService();
     const removed = service.components[index];
-    controller.updateService(current => { current.components.splice(index, 1); }, 'structural');
     if (removed.id === controller.getState().selectedId) {
-      controller.selectComponent(service.components[index]?.id || service.components[index - 1]?.id || null);
-      renderAll();
+      controller.selectComponent(service.components[index + 1]?.id || service.components[index - 1]?.id || null);
     }
+    controller.updateService(current => { current.components.splice(index, 1); }, 'structural');
   }
 
   function renderEditor() {
@@ -365,6 +500,12 @@ export function createEditorApp({
       if (!/\d/.test(reference)) { showToast('Enter a complete Bible reference, for example Psalm 23:1–6.'); return; }
       void controller.loadEsv(componentId, reference);
     });
+    prefetchOnIntent(fetchButton, () => {
+      const reference = controller.findComponent(componentId)?.reference || '';
+      return /\d/.test(reference)
+        ? `/api/scripture?reference=${encodeURIComponent(reference)}`
+        : null;
+    });
     inline.append(fetchButton, error); fields.append(inline);
     fields.append(textArea('Editable wording', component.id, 'text', component.text, 'Manual entry remains available if the ESV request fails.'));
   }
@@ -400,11 +541,11 @@ export function createEditorApp({
       const currentSequence = ++sequence;
       status.textContent = 'Searching library…'; searchInput.setAttribute('aria-expanded', 'true');
       try {
-        const response = await request(`/api/songs?q=${encodeURIComponent(searchInput.value.trim())}`);
+        const response = await getRequests.get(`/api/songs?q=${encodeURIComponent(searchInput.value.trim())}`);
         const songs = await response.json();
         if (currentSequence !== sequence) return;
         results.replaceChildren();
-        songs.slice(0, 14).forEach(song => {
+        songs.forEach(song => {
           const choice = button('', 'song-choice'); choice.setAttribute('role', 'option');
           const copy = doc.createElement('span');
           const title = doc.createElement('strong'); title.textContent = song.title;
@@ -417,7 +558,7 @@ export function createEditorApp({
           }, 'structural'));
           results.append(choice);
         });
-        status.textContent = songs.length ? `${songs.length} match${songs.length === 1 ? '' : 'es'}${songs.length > 14 ? ', showing the first 14' : ''}.` : 'No matching songs. Try a shorter title or an alternative spelling.';
+        status.textContent = songs.length ? `${songs.length} match${songs.length === 1 ? '' : 'es'}.` : 'No matching songs. Try a shorter title or an alternative spelling.';
         searchInput.setAttribute('aria-expanded', songs.length ? 'true' : 'false');
       } catch (error) {
         results.replaceChildren(); status.textContent = 'The song library could not be loaded.'; searchInput.setAttribute('aria-expanded', 'false'); showToast(error.message);
@@ -425,6 +566,7 @@ export function createEditorApp({
     }
     searchInput.addEventListener('focus', () => { if (!results.children.length) searchSongs(); });
     searchInput.addEventListener('input', () => { if (timer !== null) timers.clearTimeout(timer); timer = timers.setTimeout(searchSongs, 260); });
+    void getRequests.prefetch('/api/songs?q=');
 
     if (!component.song) {
       const divider = doc.createElement('div'); divider.className = 'editor-divider'; divider.textContent = 'Or enter custom lyrics'; fields.append(divider);
@@ -464,6 +606,12 @@ export function createEditorApp({
       if (!/\d/.test(reference)) { showToast('Enter a complete Psalm reference, for example Psalm 23:1–6.'); return; }
       void controller.loadPsalm(componentId, reference);
     });
+    prefetchOnIntent(loadButton, () => {
+      const reference = controller.findComponent(componentId)?.reference || '';
+      return /\d/.test(reference)
+        ? `/api/psalm?reference=${encodeURIComponent(reference)}`
+        : null;
+    });
     inline.append(loadButton, error); fields.append(inline);
     renderSlideBlocks(fields, component.id, 'slide_breaks', 'Psalm slide');
     const note = doc.createElement('p'); note.className = 'field-note'; note.textContent = 'Loading proposes readable groups from the embedded Sing Psalms text. You can then edit every break before generation.'; fields.append(note);
@@ -502,6 +650,12 @@ export function createEditorApp({
         return;
       }
       void controller.loadTeaching(component.id, current.source, current.selection);
+    });
+    prefetchOnIntent(loadButton, () => {
+      const current = controller.findComponent(component.id);
+      return current?.selection.trim()
+        ? `/api/teaching?source=${encodeURIComponent(current.source)}&selection=${encodeURIComponent(current.selection)}`
+        : null;
     });
     inline.append(loadButton, error); fields.append(inline);
     const note = doc.createElement('p'); note.className = 'field-note';
@@ -602,6 +756,7 @@ export function createEditorApp({
     if (controller.isDirty() || controller.isSaving()) {
       try {
         await controller.saveNow();
+        controller.cancelPreparation();
       } catch (error) {
         const generation = controller.getState().editGeneration;
         if (!confirmImpl(`Generation ${generation} is not saved. Leave and discard local edits?`)) return;
@@ -681,6 +836,7 @@ export function createEditorApp({
     generationPromise = (async () => {
       try {
         await controller.saveNow();
+        controller.cancelPreparation();
         setSaveState('Saving', 'Generating PowerPoint…');
         const response = await request(`/api/services/${service.id}/generate`, { method: 'POST' });
         const blob = await response.blob();
@@ -749,7 +905,8 @@ export function createEditorApp({
     ui['save-now']?.addEventListener('click', () => controller.saveNow().catch(() => {}));
     ui['add-component']?.addEventListener('click', () => {
       const component = { type: 'custom_text_image', id: `component-${Date.now().toString(36)}`, heading: 'Custom slide', slides: [''], image: null };
-      controller.updateService(service => { service.components.push(component); }, 'structural'); controller.selectComponent(component.id); renderOrder(); renderEditor();
+      controller.selectComponent(component.id);
+      controller.updateService(service => { service.components.push(component); }, 'structural');
     });
     ui['sign-out']?.addEventListener('click', () => {
       void guardedLeave(async () => {
@@ -765,8 +922,8 @@ export function createEditorApp({
     ui['service-preset']?.addEventListener('change', () => {
       const service = controller.getService(); const preset = presets.find(item => item.id === ui['service-preset'].value);
       if (!preset || !confirmImpl('Replace the current order with this preset?')) { ui['service-preset'].value = service.preset; return; }
+      controller.selectComponent(preset.components[0]?.id || null);
       controller.updateService(current => { current.preset = preset.id; current.components = structuredClone(preset.components); }, 'structural');
-      controller.selectComponent(controller.getService().components[0]?.id || null); renderAll();
     });
     doc.defaultView?.addEventListener('beforeunload', event => {
       if (controller.isDirty() || controller.isSaving()) { event.preventDefault(); event.returnValue = ''; }
@@ -790,8 +947,9 @@ export function createEditorApp({
 
   controller = createEditorController({
     request,
+    cachedGet: getRequests.get,
     timers,
-    render: { all: renderAll, order: renderOrder, editor: renderEditor, validation: renderValidation, orderItem: updateOrderItem, counts: updateCounts, heading: updateHeading, loader: renderLoaderState },
+    render: { all: renderAll, order: renderOrder, editor: renderEditor, derived: scheduleDerivedRender, validation: renderValidation, orderItem: updateOrderItem, counts: updateCounts, heading: updateHeading, loader: renderLoaderState },
     setSaveState,
     setSaveHelp,
     showToast,

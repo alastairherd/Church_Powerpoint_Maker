@@ -329,7 +329,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--focus); outline:
 .selected-song { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 12px; border: 1px solid #b9cec2; border-radius: var(--radius-sm); background: var(--success-soft); }
 .selected-song strong, .selected-song small { display: block; }
 .selected-song small { margin-top: 2px; color: var(--ink-soft); }
-.song-picker-results { display: grid; max-height: 330px; overflow-y: auto; border-radius: var(--radius-sm); background: var(--surface); }
+  .song-picker-results { display: grid; max-height: 330px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; border-radius: var(--radius-sm); background: var(--surface); }
 .song-choice { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 11px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; }
 .song-choice:first-child { border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
 .song-choice:last-child { border-bottom: 0; border-radius: 0 0 var(--radius-sm) var(--radius-sm); }

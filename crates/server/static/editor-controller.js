@@ -1,8 +1,10 @@
 export const SAVE_DEBOUNCE_MS = 900;
 export const LOADER_TIMEOUT_MS = 10_000;
+export const PREPARE_IDLE_MS = 3_500;
 
 export function createEditorController({
   request,
+  cachedGet = null,
   timers = { setTimeout, clearTimeout },
   makeAbortController = () => new AbortController(),
   render = {},
@@ -16,6 +18,8 @@ export function createEditorController({
     editGeneration: 0,
     savedGeneration: 0,
     saveTimer: null,
+    prepareTimer: null,
+    prepareEpoch: 0,
     activeSave: null,
     transition: Promise.resolve(),
     transitionDepth: 0,
@@ -46,6 +50,16 @@ export function createEditorController({
     throw error;
   }
 
+  async function checkedGet(url, options = {}) {
+    const response = cachedGet ? await cachedGet(url, options) : await request(url, options);
+    if (response.ok) return response;
+    const data = await response.json().catch(() => ({}));
+    const error = new Error(data.error || `Request failed (${response.status})`);
+    error.status = response.status;
+    error.body = data;
+    throw error;
+  }
+
   function loaderKey(kind, componentId) {
     return `${kind}:${componentId}`;
   }
@@ -66,7 +80,8 @@ export function createEditorController({
       timers.clearTimeout(timeoutId);
     }, LOADER_TIMEOUT_MS);
     try {
-      const response = await checkedRequest(url, { signal: abortController.signal });
+      const response = await checkedGet(url, { signal: abortController.signal });
+      if (timedOut) throw new Error('The request timed out after 10 seconds. Retry.');
       const data = await response.json();
       const parsed = parseSuccess(data);
       const current = findComponent(componentId);
@@ -169,19 +184,16 @@ export function createEditorController({
     } else if (scope === 'heading') {
       (render.heading || noop)();
       (render.orderItem || noop)(state.selectedId);
-      (render.validation || noop)();
+      (render.derived || noop)();
     } else if (scope === 'loader') {
       (render.editor || noop)();
       (render.orderItem || noop)(state.selectedId);
-      (render.counts || noop)();
-      (render.validation || noop)();
+      (render.derived || noop)();
     } else if (scope === 'summary') {
       (render.orderItem || noop)(state.selectedId);
-      (render.counts || noop)();
-      (render.validation || noop)();
+      (render.derived || noop)();
     } else {
-      (render.counts || noop)();
-      (render.validation || noop)();
+      (render.derived || noop)();
     }
   }
 
@@ -195,6 +207,7 @@ export function createEditorController({
 
   function markDirty(scope = 'targeted') {
     if (scope === 'structural') invalidateLoaderSequences();
+    cancelPreparation();
     state.editGeneration += 1;
     state.status = state.activeSave ? 'Saving' : 'Unsaved';
     setSaveState(state.status, state.status);
@@ -226,6 +239,7 @@ export function createEditorController({
   }
 
   function loadService(record, { discardUnsaved = false } = {}) {
+    cancelPreparation();
     return enqueueTransition(async () => {
       if (discardUnsaved) {
         clearPendingTimer();
@@ -265,6 +279,7 @@ export function createEditorController({
         state.status = 'Saved';
         setSaveState('Saved', 'Saved');
         setSaveHelp('');
+        schedulePreparation(state.service.id, saved.revision, sentGeneration);
       } else {
         state.status = 'Unsaved';
         setSaveState('Unsaved', 'Unsaved');
@@ -322,6 +337,30 @@ export function createEditorController({
     state.saveTimer = null;
   }
 
+  function cancelPreparation() {
+    state.prepareEpoch += 1;
+    if (state.prepareTimer !== null) timers.clearTimeout(state.prepareTimer);
+    state.prepareTimer = null;
+  }
+
+  function schedulePreparation(serviceId, revision, generation) {
+    cancelPreparation();
+    const epoch = state.prepareEpoch;
+    state.prepareTimer = timers.setTimeout(() => {
+      state.prepareTimer = null;
+      if (state.prepareEpoch !== epoch
+        || state.service?.id !== serviceId
+        || state.service?.revision !== revision
+        || state.editGeneration !== generation
+        || state.savedGeneration !== generation
+        || state.conflict) return;
+      void checkedRequest(`/api/services/${encodeURIComponent(serviceId)}/prepare`, {
+        method: 'POST',
+        body: JSON.stringify({ revision }),
+      }).catch(() => {});
+    }, PREPARE_IDLE_MS);
+  }
+
   function saveNow() {
     if (state.transitionDepth === 0) return flushDirtyGenerations({ retryActiveFailure: true });
     return enqueueTransition(() => flushDirtyGenerations({ retryActiveFailure: true }));
@@ -347,6 +386,7 @@ export function createEditorController({
     flushPendingSave,
     isDirty,
     isSaving,
+    cancelPreparation,
     loadPsalm,
     loadEsv,
     loadTeaching,

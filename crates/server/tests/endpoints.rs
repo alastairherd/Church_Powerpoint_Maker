@@ -616,6 +616,122 @@ async fn generates_an_immutable_revision_without_locking() {
     Presentation::open_bytes(&body).unwrap().validate().unwrap();
 }
 
+#[tokio::test]
+async fn prepares_an_exact_revision_without_creating_history_and_generation_reuses_it() {
+    let (app, cookie, csrf) = authenticated().await;
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/services")
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Prepared service","date":"2026-07-12","preset":"am"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(created.into_body(), usize::MAX).await.unwrap();
+    let service: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let id = service["id"].as_str().unwrap();
+    let revision = service["revision"].as_u64().unwrap();
+
+    let stale = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/services/{id}/prepare"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"revision":{}}}"#, revision + 1)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+
+    let prepared = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/services/{id}/prepare"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"revision":{revision}}}"#)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(prepared.status(), StatusCode::ACCEPTED);
+
+    let mut became_ready = false;
+    for _ in 0..400 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/services/{id}/prepare"))
+                    .header("cookie", &cookie)
+                    .header("x-csrf-token", &csrf)
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"revision":{revision}}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status();
+        if status == StatusCode::OK {
+            became_ready = true;
+            break;
+        }
+        assert_eq!(status, StatusCode::ACCEPTED);
+    }
+    assert!(became_ready, "background deck preparation did not finish");
+
+    let history = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/services/{id}/history"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let history = to_bytes(history.into_body(), usize::MAX).await.unwrap();
+    let history: serde_json::Value = serde_json::from_slice(&history).unwrap();
+    assert_eq!(history, serde_json::json!([]));
+
+    let generated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/services/{id}/generate"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(generated.status(), StatusCode::OK);
+    assert_eq!(generated.headers()["x-deck-preparation"], "hit");
+    let body = to_bytes(generated.into_body(), usize::MAX).await.unwrap();
+    Presentation::open_bytes(&body).unwrap().validate().unwrap();
+}
+
 /// The live service keeps being edited after a deck is handed out, so the history has to keep
 /// its own copy of what each PowerPoint was built from.
 #[tokio::test]

@@ -30,6 +30,93 @@ describe('editor render boundaries', () => {
     expect(app.controller().getService().components[0].reference).toBe('Romans 8:28');
   });
 
+  it('renders every matching song inside the scrollable picker', async () => {
+    const service = makeService({ components: [{ id: 'song-1', type: 'song', title: '', song: null, lyric_slides: [''], credits: '' }] });
+    const songs = Array.from({ length: 20 }, (_, index) => ({
+      id: `song-${index}`,
+      title: `Song ${index + 1}`,
+      variant_label: '',
+      current_version: 1,
+      slide_count: 2,
+    }));
+    const app = createEditorApp({
+      document,
+      request: async url => url.startsWith('/api/songs?') ? jsonResponse(songs) : jsonResponse(service),
+    });
+
+    await app.loadService(service);
+    const search = document.querySelector('.song-picker input[type="search"]');
+    search.dispatchEvent(new Event('focus'));
+
+    await vi.waitFor(() => expect(document.querySelectorAll('.song-choice')).toHaveLength(20));
+    expect(document.querySelector('.song-search-status').textContent).toBe('20 matches.');
+    expect(document.querySelector('.song-picker-results').className).toContain('song-picker-results');
+  });
+
+  it('prefetches Psalm data on intent and reuses it without editing until Load is clicked', async () => {
+    const service = makeService();
+    let psalmRequests = 0;
+    const app = createEditorApp({
+      document,
+      request: async url => {
+        if (url.startsWith('/api/psalm?')) {
+          psalmRequests += 1;
+          return jsonResponse({ reference: 'Psalm 23:1–6', meter: '11 11 11', slides: ['Prepared first', 'Prepared second'] });
+        }
+        return jsonResponse(service);
+      },
+    });
+    await app.loadService(service);
+    document.querySelector('[data-id="psalm-1"] .component-main').click();
+    const load = document.querySelector('[data-loader-kind="psalm"]');
+
+    load.dispatchEvent(new Event('pointerenter'));
+    await vi.waitFor(() => expect(psalmRequests).toBe(1));
+    expect(service.components[1].slide_breaks).toEqual(['The LORD is my shepherd']);
+    expect(app.controller().getState().editGeneration).toBe(0);
+
+    load.click();
+    await vi.waitFor(() => expect(service.components[1].slide_breaks).toEqual(['Prepared first', 'Prepared second']));
+    expect(psalmRequests).toBe(1);
+  });
+
+  it('batches whole-service counts and validation while rapid typing stays immediate', async () => {
+    const components = Array.from({ length: 120 }, (_, index) => ({
+      id: `reading-${index}`,
+      type: 'reading',
+      heading: `Reading ${index + 1}`,
+      reference: 'John 3:16',
+      bible_page: null,
+    }));
+    const service = makeService({ components });
+    let flushDerived;
+    const scheduleFrame = vi.fn(callback => {
+      flushDerived = callback;
+      return 1;
+    });
+    const app = createEditorApp({
+      document,
+      request: async () => jsonResponse(service),
+      scheduleFrame,
+      timers: { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn(), setInterval: vi.fn(), clearInterval: vi.fn() },
+    });
+    await app.loadService(service);
+    const input = document.querySelector('[data-field="reference"]');
+    const originalValidation = document.getElementById('validation-list').firstElementChild;
+
+    for (const value of ['', ' ', '  ', '']) {
+      input.value = value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    expect(app.controller().getService().components[0].reference).toBe('');
+    expect(scheduleFrame).toHaveBeenCalledOnce();
+    expect(document.getElementById('validation-list').firstElementChild).toBe(originalValidation);
+
+    flushDerived();
+    expect(document.getElementById('validation-list').textContent).toContain('Add a Bible or psalm reference');
+  });
+
   it('updates a heading order item without rebuilding unrelated editor DOM', async () => {
     const service = makeService();
     const app = createEditorApp({ document, request: async () => jsonResponse(service) });
@@ -106,6 +193,7 @@ describe('editor render boundaries', () => {
     const service = makeService();
     const app = createEditorApp({
       document,
+      scheduleFrame: callback => queueMicrotask(callback),
       request: async url => {
         if (url.includes('/psalm?')) return jsonResponse({ reference: 'Psalm 23:1–6', slides: ['First', 'Second'], meter: 'Common metre' });
         return jsonResponse(service);
@@ -378,11 +466,54 @@ describe('editor render boundaries', () => {
     await app.loadService(service);
     const editor = document.getElementById('editor-panel');
     editor.scrollIntoView = vi.fn();
+    const readingItem = document.querySelector('[data-id="reading-1"]');
+    const psalmItem = document.querySelector('[data-id="psalm-1"]');
 
     document.querySelector('[data-id="psalm-1"] .component-main').click();
 
+    expect(document.querySelector('[data-id="reading-1"]')).toBe(readingItem);
+    expect(document.querySelector('[data-id="psalm-1"]')).toBe(psalmItem);
+    expect(readingItem.classList.contains('selected')).toBe(false);
+    expect(psalmItem.classList.contains('selected')).toBe(true);
     expect(editor.scrollTop).toBe(0);
     expect(editor.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+  });
+
+  it('selects a newly added component before its single structural render', async () => {
+    const service = makeService();
+    const app = createEditorApp({
+      document,
+      request: async url => {
+        if (url === '/api/presets' || url === '/api/services') return jsonResponse([]);
+        return jsonResponse(service);
+      },
+    });
+    app.boot();
+    await app.loadService(service);
+
+    document.getElementById('add-component').click();
+
+    const selected = document.querySelector('.component-item.selected');
+    expect(selected.dataset.type).toBe('custom_text_image');
+    expect(app.controller().getState().selectedId).toBe(selected.dataset.id);
+    expect(document.getElementById('editor-panel').textContent).toContain('Custom slides');
+  });
+
+  it('keeps selection correct when duplicating and removing components', async () => {
+    const service = makeService();
+    const app = createEditorApp({ document, request: async () => jsonResponse(service) });
+    await app.loadService(service);
+
+    document.querySelector('[data-id="reading-1"] [aria-label^="Duplicate"]').click();
+    const duplicateId = app.controller().getState().selectedId;
+    expect(duplicateId).not.toBe('reading-1');
+    expect(document.querySelector(`[data-id="${duplicateId}"]`).classList.contains('selected')).toBe(true);
+    expect(app.controller().getService().components[1].id).toBe(duplicateId);
+
+    document.querySelector(`[data-id="${duplicateId}"] [aria-label^="Remove"]`).click();
+    expect(app.controller().getState().selectedId).toBe('psalm-1');
+    expect(document.querySelector('[data-id="psalm-1"]').classList.contains('selected')).toBe(true);
+    expect(document.getElementById('editor-panel').textContent).toContain('Sing Psalms reference');
   });
 
   it('marks song and psalm order items with their type class for highlighting', async () => {
