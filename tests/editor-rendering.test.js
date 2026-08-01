@@ -302,6 +302,24 @@ describe('editor render boundaries', () => {
     expect(beforeunload.defaultPrevented).toBe(true);
   });
 
+  it('opens the service requested by a restore link instead of another existing draft', async () => {
+    const firstDraft = makeService({ id: 'older-draft', name: 'Older draft' });
+    const restored = makeService({ id: 'restored-draft', name: 'Copy of Morning service' });
+    const app = createEditorApp({
+      document,
+      locationImpl: { search: '?service=restored-draft', assign: vi.fn() },
+      request: async url => {
+        if (url === '/api/presets') return jsonResponse([]);
+        if (url === '/api/services') return jsonResponse([firstDraft, restored]);
+        throw new Error(`unexpected request to ${url}`);
+      },
+    });
+
+    app.boot();
+    await vi.waitFor(() => expect(app.controller().getService()?.id).toBe('restored-draft'));
+    expect(document.getElementById('service-name').value).toBe('Copy of Morning service');
+  });
+
   it('keeps the save live region to its canonical label and puts failure detail in help text', async () => {
     const service = makeService();
     const app = createEditorApp({

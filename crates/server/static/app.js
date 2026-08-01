@@ -776,7 +776,10 @@ export function createEditorApp({
       request('/api/services').then(response => response.json()),
     ]).then(([loadedPresets, services]) => {
       presets = loadedPresets; renderPresetChoices();
-      const current = services.find(item => item.status === 'draft') || services.find(item => item.status !== 'archived');
+      const requestedServiceId = new URLSearchParams(locationImpl?.search || '').get('service');
+      const current = services.find(item => item.id === requestedServiceId)
+        || services.find(item => item.status === 'draft')
+        || services.find(item => item.status !== 'archived');
       if (current) loadService(current); else ui['new-dialog']?.showModal();
     }).catch(error => showToast(error.message));
   }

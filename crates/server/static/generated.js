@@ -42,6 +42,26 @@ async function downloadDeck(record, button) {
   }
 }
 
+// Restoring creates a separate draft. The generated revision remains an immutable record of
+// what was originally handed out, while the new service can be freely edited in the builder.
+async function restoreDeck(record, button) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Opening builder…';
+  try {
+    const response = await request(record.restore_url, { method: 'POST' });
+    const service = await response.json();
+    const link = document.createElement('a');
+    link.href = `/?service=${encodeURIComponent(service.id)}`;
+    link.click();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
 function componentSummary(component) {
   const detail = [
     component.reference,
@@ -135,6 +155,15 @@ function render(records) {
       contents.setAttribute('aria-expanded', 'false');
       contents.addEventListener('click', () => toggleSnapshot(record, contents, panel));
       actions.append(contents);
+    }
+
+    if (record.restore_url) {
+      const restore = document.createElement('button');
+      restore.type = 'button';
+      restore.className = 'button button-secondary';
+      restore.textContent = 'Use as starting point';
+      restore.addEventListener('click', () => restoreDeck(record, restore));
+      actions.append(restore);
     }
 
     const download = document.createElement('button');

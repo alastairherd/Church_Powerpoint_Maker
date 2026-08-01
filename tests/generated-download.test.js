@@ -11,6 +11,7 @@ const RECORD = {
   source_revision: 4,
   download_url: '/api/services/service-1/revisions/26/download',
   snapshot_url: '/api/services/service-1/revisions/26/snapshot',
+  restore_url: '/api/services/service-1/revisions/26/restore',
 };
 
 const SNAPSHOT = {
@@ -38,10 +39,10 @@ async function bootPage(handlers) {
     <button class="sign-out"></button>
     <div id="toast"></div>
   `;
-  global.fetch = vi.fn(async url => {
+  global.fetch = vi.fn(async (url, options) => {
     const handler = handlers[url] || handlers.default;
     if (!handler) throw new Error(`unexpected request to ${url}`);
-    return handler();
+    return handler(options);
   });
   globalThis.URL.createObjectURL = vi.fn(() => 'blob:deck');
   globalThis.URL.revokeObjectURL = vi.fn();
@@ -130,11 +131,61 @@ describe('viewing what a deck was generated from', () => {
     await bootPage({
       '/api/generated': () => ({
         ok: true,
-        json: async () => [{ ...RECORD, snapshot_url: null }],
+        json: async () => [{ ...RECORD, snapshot_url: null, restore_url: null }],
       }),
     });
 
     expect(button('View contents')).toBeUndefined();
+    expect(button('Use as starting point')).toBeUndefined();
     expect(button('Download PowerPoint')).toBeDefined();
+  });
+});
+
+describe('reusing a generated deck in the builder', () => {
+  it('creates a new draft from the saved revision and opens that exact service', async () => {
+    await bootPage({
+      '/api/generated': listingOk,
+      [RECORD.restore_url]: () => ({
+        ok: true,
+        json: async () => ({ ...SNAPSHOT, id: 'restored service/2', name: 'Copy of Morning service' }),
+      }),
+    });
+
+    const anchors = [];
+    const createElement = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation(tag => {
+      const element = createElement(tag);
+      if (tag === 'a') {
+        element.click = vi.fn();
+        anchors.push(element);
+      }
+      return element;
+    });
+
+    button('Use as starting point').click();
+    await vi.waitFor(() => expect(anchors).toHaveLength(1));
+    const [, options] = global.fetch.mock.calls.find(([url]) => url === RECORD.restore_url);
+    expect(options.method).toBe('POST');
+    expect(options.headers.get('x-csrf-token')).toBe('test-csrf');
+    expect(new URL(anchors[0].href).searchParams.get('service')).toBe('restored service/2');
+    expect(anchors[0].click).toHaveBeenCalled();
+  });
+
+  it('reports a restore failure and leaves the action available to retry', async () => {
+    await bootPage({
+      '/api/generated': listingOk,
+      [RECORD.restore_url]: () => ({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: 'saved settings are unavailable' }),
+      }),
+    });
+
+    const restore = button('Use as starting point');
+    restore.click();
+    await vi.waitFor(() =>
+      expect(document.getElementById('toast').textContent).toBe('saved settings are unavailable'));
+    expect(restore.disabled).toBe(false);
+    expect(restore.textContent).toBe('Use as starting point');
   });
 });

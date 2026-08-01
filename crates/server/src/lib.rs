@@ -12,9 +12,9 @@ use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use chrono::{Duration as ChronoDuration, NaiveDate, Utc};
 use deck_builder::{
-    build_deck, propose_psalm_groups, FixedComponent, GeneratedDeckVersion, GlobalSettingsVersion,
-    Psalm, ServicePreset, ServiceRecord, ServiceStatus, Sources, StoredSong, Teaching,
-    TeachingSource,
+    build_deck, propose_psalm_groups, AuditMetadata, FixedComponent, GeneratedDeckVersion,
+    GlobalSettingsVersion, Psalm, ServicePreset, ServiceRecord, ServiceStatus, Sources, StoredSong,
+    Teaching, TeachingSource,
 };
 use hmac::{Hmac, Mac};
 use http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, ETAG, SET_COOKIE};
@@ -149,6 +149,10 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
         .route(
             "/api/services/:id/revisions/:revision/snapshot",
             get(service_revision_snapshot),
+        )
+        .route(
+            "/api/services/:id/revisions/:revision/restore",
+            post(restore_service_revision),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_staff))
         .with_state(state.clone());
@@ -718,6 +722,7 @@ struct GeneratedDeckListing {
     /// Decks generated before the service snapshot was recorded have nothing to show, and the
     /// history page hides the control rather than offering a link that cannot work.
     snapshot_url: Option<String>,
+    restore_url: Option<String>,
 }
 
 async fn generated_decks(
@@ -764,6 +769,12 @@ async fn generated_decks(
                     metadata.service_id, metadata.revision
                 )
             }),
+            restore_url: snapshot.map(|_| {
+                format!(
+                    "/api/services/{}/revisions/{}/restore",
+                    metadata.service_id, metadata.revision
+                )
+            }),
         });
     }
     generated.sort_by(|left, right| {
@@ -789,6 +800,46 @@ async fn service_revision_snapshot(
             "this PowerPoint was generated before the service was recorded with it",
         )
     })
+}
+
+/// Start a new editable service from the immutable settings saved with a generated deck. The
+/// original service and its history stay untouched, even if the live service has since changed.
+async fn restore_service_revision(
+    State(state): State<AppState>,
+    Extension(session): Extension<StaffSession>,
+    Path((id, revision)): Path<(String, u64)>,
+) -> Result<Response, AppError> {
+    let metadata = load_generated_deck(&state, &id, revision).await?;
+    let mut service = metadata.service.ok_or_else(|| {
+        AppError::new(
+            StatusCode::NOT_FOUND,
+            "this PowerPoint was generated before the service was recorded with it",
+        )
+    })?;
+
+    service.id = new_id(&state, "svc");
+    service.name = copy_service_name(&service.name);
+    service.status = ServiceStatus::Draft;
+    service.revision = 0;
+    service.audit = AuditMetadata::new(session.display_name);
+    validate_service_name(&service.name)?;
+
+    let stored = put_json(
+        state.store.as_ref(),
+        &service_key(&service.id),
+        &service,
+        PutCondition::IfNoneMatch,
+    )
+    .await?;
+    json_with_etag(StatusCode::CREATED, &service, &stored.etag)
+}
+
+fn copy_service_name(source: &str) -> String {
+    let mut name = format!("Copy of {source}");
+    while name.len() > 100 {
+        name.pop();
+    }
+    name
 }
 
 async fn load_generated_deck(

@@ -630,6 +630,10 @@ async fn generated_history_records_the_service_each_deck_was_built_from() {
         snapshot_url,
         format!("/api/services/{id}/revisions/1/snapshot")
     );
+    assert_eq!(
+        listing[0]["restore_url"].as_str().expect("restore url"),
+        format!("/api/services/{id}/revisions/1/restore")
+    );
 
     let snapshot = get_json(&app, &cookie, snapshot_url).await;
     assert_eq!(snapshot["id"], id.as_str());
@@ -671,6 +675,85 @@ async fn generated_history_records_the_service_each_deck_was_built_from() {
     assert_eq!(
         listing[0]["service_name"], "Morning service",
         "history shows the name the deck was generated under"
+    );
+}
+
+/// Reusing a generated deck must fork the saved settings into a new draft. It must never turn
+/// the historical snapshot back into the live service or overwrite later edits to that service.
+#[tokio::test]
+async fn generated_service_settings_can_be_restored_as_a_new_draft() {
+    let (app, cookie, csrf) = authenticated().await;
+    let id = create_service(&app, &cookie, &csrf, "Morning service").await;
+    generate(&app, &cookie, &csrf, &id).await;
+
+    let snapshot_url = format!("/api/services/{id}/revisions/1/snapshot");
+    let snapshot = get_json(&app, &cookie, &snapshot_url).await;
+
+    // Prove restoration uses the immutable generated revision, not the live service that may
+    // since have been renamed and rearranged.
+    let mut live = get_json(&app, &cookie, &format!("/api/services/{id}")).await;
+    live["name"] = serde_json::json!("Renamed live service");
+    live["components"].as_array_mut().unwrap().reverse();
+    let updated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/services/{id}"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&live).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), StatusCode::OK);
+
+    let restored_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/services/{id}/revisions/1/restore"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored_response.status(), StatusCode::CREATED);
+    let body = to_bytes(restored_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let restored: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    let restored_id = restored["id"].as_str().expect("new service id");
+    assert_ne!(restored_id, id);
+    assert_eq!(restored["name"], "Copy of Morning service");
+    assert_eq!(restored["date"], snapshot["date"]);
+    assert_eq!(restored["preset"], snapshot["preset"]);
+    assert_eq!(restored["period"], snapshot["period"]);
+    assert_eq!(restored["pm_style"], snapshot["pm_style"]);
+    assert_eq!(restored["lords_supper"], snapshot["lords_supper"]);
+    assert_eq!(restored["components"], snapshot["components"]);
+    assert_eq!(restored["status"], "draft");
+    assert_eq!(restored["revision"], 0);
+    assert_eq!(restored["audit"]["created_by"], "Test Staff");
+
+    let source = get_json(&app, &cookie, &format!("/api/services/{id}")).await;
+    assert_eq!(source["name"], "Renamed live service");
+    assert_ne!(source["components"], restored["components"]);
+    assert_eq!(
+        get_json(&app, &cookie, &snapshot_url).await["components"],
+        snapshot["components"],
+        "restoring must not rewrite the generated revision"
+    );
+    assert_eq!(
+        get_json(&app, &cookie, &format!("/api/services/{restored_id}")).await["components"],
+        snapshot["components"],
+        "the restored draft is persisted and opens like any other service"
     );
 }
 
