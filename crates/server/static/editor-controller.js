@@ -20,6 +20,7 @@ export function createEditorController({
     saveTimer: null,
     prepareTimer: null,
     prepareEpoch: 0,
+    preparationAvailable: true,
     activeSave: null,
     transition: Promise.resolve(),
     transitionDepth: 0,
@@ -344,6 +345,7 @@ export function createEditorController({
   }
 
   function schedulePreparation(serviceId, revision, generation) {
+    if (!state.preparationAvailable) return;
     cancelPreparation();
     const epoch = state.prepareEpoch;
     state.prepareTimer = timers.setTimeout(() => {
@@ -357,7 +359,12 @@ export function createEditorController({
       void checkedRequest(`/api/services/${encodeURIComponent(serviceId)}/prepare`, {
         method: 'POST',
         body: JSON.stringify({ revision }),
-      }).catch(() => {});
+      })
+        .then(response => response.json().catch(() => ({})))
+        .then(result => {
+          if (result.status === 'disabled') state.preparationAvailable = false;
+        })
+        .catch(() => {});
     }, PREPARE_IDLE_MS);
   }
 

@@ -19,3 +19,6 @@ services:
         sync: false
       - key: R2_SECRET_ACCESS_KEY
         sync: false
+      # Full PPTX assembly is CPU-heavy and competes with foreground Generate on this plan.
+      - key: BACKGROUND_DECK_PREPARATION
+        value: "false"

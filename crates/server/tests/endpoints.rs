@@ -23,7 +23,7 @@ impl Sources for TestSources {
     }
 }
 
-fn test_app() -> axum::Router {
+fn test_app_with_background(background_deck_preparation: bool) -> axum::Router {
     let salt = SaltString::encode_b64(b"twpc-test-salt").unwrap();
     let hash = Argon2::default()
         .hash_password(b"correct horse", &salt)
@@ -36,12 +36,23 @@ fn test_app() -> axum::Router {
             session_signing_secret: "test-session-signing-secret-at-least-32-bytes".into(),
             secure_cookies: false,
             session_ttl: Duration::from_secs(3600),
+            background_deck_preparation,
         },
     )
 }
 
+fn test_app() -> axum::Router {
+    test_app_with_background(false)
+}
+
 async fn authenticated() -> (axum::Router, String, String) {
     let app = test_app();
+    let (cookie, csrf) = login(&app, "Test Staff").await;
+    (app, cookie, csrf)
+}
+
+async fn authenticated_with_background() -> (axum::Router, String, String) {
+    let app = test_app_with_background(true);
     let (cookie, csrf) = login(&app, "Test Staff").await;
     (app, cookie, csrf)
 }
@@ -617,8 +628,34 @@ async fn generates_an_immutable_revision_without_locking() {
 }
 
 #[tokio::test]
-async fn prepares_an_exact_revision_without_creating_history_and_generation_reuses_it() {
+async fn full_deck_background_preparation_is_disabled_by_default() {
     let (app, cookie, csrf) = authenticated().await;
+    let id = create_service(&app, &cookie, &csrf, "Foreground generation").await;
+    let service = get_json(&app, &cookie, &format!("/api/services/{id}")).await;
+    let revision = service["revision"].as_u64().unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/services/{id}/prepare"))
+                .header("cookie", cookie)
+                .header("x-csrf-token", csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"revision":{revision}}}"#)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["status"], "disabled");
+}
+
+#[tokio::test]
+async fn prepares_an_exact_revision_without_creating_history_and_generation_reuses_it() {
+    let (app, cookie, csrf) = authenticated_with_background().await;
     let created = app
         .clone()
         .oneshot(

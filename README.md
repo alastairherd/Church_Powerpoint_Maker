@@ -33,8 +33,14 @@ silently lost. Staff-edited slide breaks remain authoritative.
 
 ### Background deck preparation
 
-After an autosave has remained unchanged for 3.5 seconds, the server may prepare
-the exact saved revision in the background. This is an optimisation only:
+Full-deck background preparation is experimental and disabled by default. It was
+found to compete with foreground Generate on CPU-constrained hosting, because
+PPTX assembly and ZIP compression are CPU-heavy. Safe read-only source
+prefetching remains enabled, but production uses the original single foreground
+deck build unless `BACKGROUND_DECK_PREPARATION=true` is explicitly configured.
+
+When explicitly enabled, an autosave that remains unchanged for 3.5 seconds may
+prepare the exact saved revision in the background:
 
 - preparation runs on one dedicated worker and uses a bounded queue;
 - completed decks are cached in memory for up to 20 minutes, with a maximum of
@@ -44,8 +50,9 @@ the exact saved revision in the background. This is an optimisation only:
 - a later edit or settings change invalidates the corresponding prepared work;
 - preparation never marks a service complete, publishes a deck, or writes to
   generated history;
-- Generate briefly checks for the exact prepared result, then falls back to the
-  normal foreground build instead of waiting behind the background queue.
+- Generate uses an exact result only when it is already complete. It never waits
+  behind the background queue; otherwise it immediately uses the normal
+  foreground build.
 
 Successful generation still performs all permanent writes in one place: it
 stores the PPTX, records an immutable service snapshot in generated history, and
@@ -70,6 +77,7 @@ The server needs a few things from the environment:
 | `PORT` | Defaults to 8080 |
 | `OBJECT_STORE` | Set to `memory` to run without R2; nothing is persisted |
 | `COOKIE_SECURE` | Set to `false` when developing over plain HTTP |
+| `BACKGROUND_DECK_PREPARATION` | Experimental full-deck preparation; defaults to `false` because it can compete for CPU on constrained hosts |
 
 ```sh
 cargo run -p server
