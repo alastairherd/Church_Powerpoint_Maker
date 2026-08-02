@@ -1,0 +1,74 @@
+name: Deploy to home server
+
+# Push-to-deploy without exposing anything to the public internet.
+#
+# The Coolify instance is bound to loopback and published only on the tailnet via
+# `tailscale serve`. This job joins the tailnet as a short-lived, tagged node for
+# the duration of the run, calls the Coolify API over it, and leaves. Nothing is
+# reachable from the internet at any point.
+#
+# A failing build is safe: Coolify builds the new image first and only swaps
+# traffic once the new container is up, so a bad commit fails this job and leaves
+# the previous container serving.
+
+on:
+  push:
+    branches: [release/rust-web-app]
+  workflow_dispatch:
+
+# Never let two deployments of the same app overlap.
+concurrency:
+  group: deploy-church-powerpoint
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Join the tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Trigger deployment and wait for the result
+        env:
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          COOLIFY_BASE: https://homeserver.tail724b7f.ts.net/api/v1
+          APP_UUID: wom00g24u7k5zlfq7x74z358
+        run: |
+          set -euo pipefail
+
+          echo "Triggering deployment of church-powerpoint"
+          RESP=$(curl -sS --fail-with-body \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
+            "$COOLIFY_BASE/deploy?uuid=$APP_UUID&force=false")
+
+          DU=$(echo "$RESP" | jq -r '.deployments[0].deployment_uuid // empty')
+          if [ -z "$DU" ]; then
+            echo "::error::Coolify did not queue a deployment. Response: $RESP"
+            exit 1
+          fi
+          echo "deployment_uuid=$DU"
+
+          # Rust images build from scratch each time (no cargo cache layer), so
+          # allow well over twenty minutes before giving up.
+          for i in $(seq 1 160); do
+            sleep 10
+            ST=$(curl -sS -H "Authorization: Bearer $COOLIFY_TOKEN" \
+                  "$COOLIFY_BASE/deployments/$DU" | jq -r '.status // "unknown"')
+            echo "[$((i * 10))s] status=$ST"
+            case "$ST" in
+              finished)
+                echo "::notice::Deployed church-powerpoint successfully"
+                exit 0 ;;
+              failed|cancelled-by-user)
+                echo "::error::Deployment ended as '$ST'. Check the Coolify dashboard at https://homeserver.tail724b7f.ts.net"
+                exit 1 ;;
+            esac
+          done
+
+          echo "::error::Timed out waiting for the deployment to finish"
+          exit 1
