@@ -1,13 +1,5 @@
-function request(url, options = {}) {
-  const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
-  const headers = new Headers(options.headers || {});
-  if (csrf && !['GET', 'HEAD'].includes((options.method || 'GET').toUpperCase())) headers.set('x-csrf-token', csrf);
-  return fetch(url, { ...options, headers }).then(async response => {
-    if (response.ok) return response;
-    const data = await response.json().catch(() => ({}));
-    throw new Error(data.error || `Request failed (${response.status})`);
-  });
-}
+import { createApiRequest } from './api.js';
+const request = createApiRequest();
 
 function showToast(message) {
   const toast = document.getElementById('toast');

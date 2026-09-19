@@ -217,6 +217,9 @@ fn classify_s3_status(key: &str, status: Option<u16>, message: &str) -> StoreErr
         Some(status) => {
             StoreError::Unavailable(format!("R2 request failed with HTTP {status}: {message}"))
         }
+        None if message.contains("dispatch failure") => StoreError::Unavailable(
+            "Cannot connect to service storage (R2). Please try again shortly. If this persists, ask the administrator to check the server DNS and network connection.".into(),
+        ),
         None => StoreError::Unavailable(message.to_string()),
     }
 }

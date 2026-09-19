@@ -1,4 +1,4 @@
-const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
+import { createApiRequest } from './api.js';
 const search = document.getElementById('song-search');
 const results = document.getElementById('library-results');
 const preview = document.getElementById('song-preview');
@@ -16,16 +16,7 @@ let searchTimer = null;
 let requestNumber = 0;
 let toastTimer = null;
 
-async function request(url, options = {}) {
-  const headers = new Headers(options.headers || {});
-  if (csrf && !['GET', 'HEAD'].includes((options.method || 'GET').toUpperCase())) headers.set('x-csrf-token', csrf);
-  const response = await fetch(url, { ...options, headers });
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error(data.error || `Request failed (${response.status})`);
-  }
-  return response;
-}
+const request = createApiRequest();
 
 function showToast(message) {
   toast.textContent = message;

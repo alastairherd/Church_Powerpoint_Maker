@@ -1,4 +1,4 @@
-const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
+import { createApiRequest } from './api.js';
 const form = document.getElementById('settings-form');
 const licence = document.getElementById('ccli-number');
 const version = document.getElementById('settings-version');
@@ -7,16 +7,11 @@ const songCount = document.getElementById('admin-song-count');
 const toast = document.getElementById('toast');
 let toastTimer = null;
 
-async function request(url, options = {}) {
+const apiRequest = createApiRequest();
+function request(url, options = {}) {
   const headers = new Headers(options.headers || {});
-  if (csrf && !['GET', 'HEAD'].includes((options.method || 'GET').toUpperCase())) headers.set('x-csrf-token', csrf);
   if (options.body) headers.set('content-type', 'application/json');
-  const response = await fetch(url, { ...options, headers });
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error(data.error || `Request failed (${response.status})`);
-  }
-  return response;
+  return apiRequest(url, { ...options, headers });
 }
 
 function showToast(message) {

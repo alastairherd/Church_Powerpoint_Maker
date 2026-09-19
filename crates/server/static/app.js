@@ -1,3 +1,4 @@
+import { createApiRequest } from './api.js';
 import { createEditorController } from './editor-controller.js';
 
 const componentLabels = {
@@ -120,21 +121,12 @@ export function createEditorApp({
   let lastOrderDragBefore = null;
   const generationLabels = new Map();
 
+  const apiRequest = createApiRequest({ document: doc, fetchImpl });
   async function request(url, options = {}) {
     if (injectedRequest) return injectedRequest(url, options);
     const headers = new Headers(options.headers || {});
-    const csrf = doc.querySelector('meta[name="csrf-token"]')?.content;
-    if (csrf && !['GET', 'HEAD'].includes((options.method || 'GET').toUpperCase())) headers.set('x-csrf-token', csrf);
     if (options.body && !(options.body instanceof FormData)) headers.set('content-type', 'application/json');
-    const response = await fetchImpl(url, { ...options, headers });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      const error = new Error(data.error || `Request failed (${response.status})`);
-      error.status = response.status;
-      error.body = data;
-      throw error;
-    }
-    return response;
+    return apiRequest(url, { ...options, headers });
   }
 
   const getRequests = createGetRequestCache(url => request(url));
