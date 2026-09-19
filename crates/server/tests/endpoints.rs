@@ -1162,3 +1162,34 @@ async fn uploading_something_that_is_not_a_powerpoint_is_rejected() {
         .unwrap()
         .contains("PowerPoint was rejected"));
 }
+
+#[tokio::test]
+async fn private_pages_and_sessions_are_not_cacheable() {
+    let (app, cookie, _) = authenticated().await;
+    for uri in ["/", "/api/session", "/api/services"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "private, no-store");
+    }
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/session")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+}

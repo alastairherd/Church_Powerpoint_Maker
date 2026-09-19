@@ -148,3 +148,25 @@ imperative sentence with no prefix, body wrapped at about 72 characters.
 
 `CLAUDE.md` is the working guide for LLM assistants; `PRODUCT.md` and `DESIGN.md`
 cover the product intent and interface design.
+
+## Coolify deployment and DNS
+
+Deploy the GitHub repository with its root `Dockerfile`. The image entrypoint
+checks R2 DNS at each container start. If the inherited Docker DNS cannot resolve
+R2, it tries `1.1.1.1` and `9.9.9.9`, preserving the original resolver entries.
+This handles containers started before the host's Tailscale DNS is available and
+survives Coolify redeployments without editing the running container manually.
+No Cloudflare management token is needed.
+
+Use the Coolify runtime variable `APP_DNS_FALLBACKS` to choose space-separated
+resolver IPs; set it to an empty string to disable this behaviour. Private-network
+installations should use their own reachable resolvers. Failed fallback checks
+restore the original resolver configuration and log a diagnostic. The runtime
+must be allowed to write `/etc/resolv.conf` (the supplied image runs as root).
+`OBJECT_STORE=memory` skips this check. `/healthz` is only a process liveness check,
+not a storage readiness check.
+
+After deploying, check the container startup logs, load an existing service and
+generate a deck. The browser refreshes a stale CSRF token and retries once only
+when the server explicitly rejects it before executing the action. Authentication
+expiry still requires signing in again; unsaved edits are not discarded.

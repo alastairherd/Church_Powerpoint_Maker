@@ -311,6 +311,7 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
             post(restore_service_revision),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_staff))
+        .layer(middleware::from_fn(private_response))
         .with_state(state.clone());
 
     Router::new()
@@ -318,6 +319,7 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
         .route("/healthz", get(healthz))
         .route("/static/app.css", get(stylesheet))
         .route("/static/app.js", get(javascript))
+        .route("/static/api.js", get(api_javascript))
         .route(
             "/static/editor-controller.js",
             get(editor_controller_javascript),
@@ -332,6 +334,22 @@ pub fn app(sources: Arc<dyn Sources>, store: Arc<dyn ObjectStore>, config: AppCo
 
 pub fn app_with_sources(sources: Arc<dyn Sources>, config: AppConfig) -> Router {
     app(sources, Arc::new(MemoryObjectStore::default()), config)
+}
+
+async fn private_response(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        http::header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response
+}
+
+async fn api_javascript() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("../static/api.js"),
+    )
 }
 
 async fn healthz() -> &'static str {
