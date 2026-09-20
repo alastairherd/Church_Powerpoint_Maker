@@ -37,7 +37,7 @@ RUN cargo build --release -p server
 
 FROM debian:stable-slim AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/server /usr/local/bin/church-deck-server
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
