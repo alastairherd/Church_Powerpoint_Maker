@@ -1,4 +1,4 @@
-import { createApiRequest } from './api.js';
+import { createApiRequest } from './api.js?v=20260921-cache-fix';
 const search = document.getElementById('song-search');
 const results = document.getElementById('library-results');
 const preview = document.getElementById('song-preview');

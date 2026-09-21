@@ -1,5 +1,5 @@
-import { createApiRequest } from './api.js';
-import { createEditorController } from './editor-controller.js';
+import { createApiRequest } from './api.js?v=20260921-cache-fix';
+import { createEditorController } from './editor-controller.js?v=20260921-cache-fix';
 
 const componentLabels = {
   welcome: 'Welcome', notices: 'Notices', call_to_worship: 'Call to Worship',

@@ -1,4 +1,4 @@
-import { createApiRequest } from './api.js';
+import { createApiRequest } from './api.js?v=20260921-cache-fix';
 const request = createApiRequest();
 
 function showToast(message) {

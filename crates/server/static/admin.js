@@ -1,4 +1,4 @@
-import { createApiRequest } from './api.js';
+import { createApiRequest } from './api.js?v=20260921-cache-fix';
 const form = document.getElementById('settings-form');
 const licence = document.getElementById('ccli-number');
 const version = document.getElementById('settings-version');

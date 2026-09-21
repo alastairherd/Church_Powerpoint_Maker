@@ -351,7 +351,10 @@ async fn private_response(request: Request, next: Next) -> Response {
 
 async fn api_javascript() -> impl IntoResponse {
     (
-        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        [
+            (CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (http::header::CACHE_CONTROL, "no-store"),
+        ],
         include_str!("../static/api.js"),
     )
 }
@@ -362,42 +365,60 @@ async fn healthz() -> &'static str {
 
 async fn stylesheet() -> impl IntoResponse {
     (
-        [(CONTENT_TYPE, "text/css; charset=utf-8")],
+        [
+            (CONTENT_TYPE, "text/css; charset=utf-8"),
+            (http::header::CACHE_CONTROL, "no-store"),
+        ],
         include_str!("../static/app.css"),
     )
 }
 
 async fn javascript() -> impl IntoResponse {
     (
-        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        [
+            (CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (http::header::CACHE_CONTROL, "no-store"),
+        ],
         include_str!("../static/app.js"),
     )
 }
 
 async fn editor_controller_javascript() -> impl IntoResponse {
     (
-        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        [
+            (CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (http::header::CACHE_CONTROL, "no-store"),
+        ],
         include_str!("../static/editor-controller.js"),
     )
 }
 
 async fn library_javascript() -> impl IntoResponse {
     (
-        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        [
+            (CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (http::header::CACHE_CONTROL, "no-store"),
+        ],
         include_str!("../static/library.js"),
     )
 }
 
 async fn admin_javascript() -> impl IntoResponse {
     (
-        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        [
+            (CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (http::header::CACHE_CONTROL, "no-store"),
+        ],
         include_str!("../static/admin.js"),
     )
 }
 
 async fn generated_javascript() -> impl IntoResponse {
     (
-        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        [
+            (CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (http::header::CACHE_CONTROL, "no-store"),
+        ],
         include_str!("../static/generated.js"),
     )
 }

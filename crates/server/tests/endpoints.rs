@@ -1224,3 +1224,54 @@ async fn psalm_api_selects_psalter_and_variant() {
         assert!(data["slides"].to_string().contains(expected));
     }
 }
+
+#[tokio::test]
+async fn editor_assets_bypass_old_caches_and_cannot_be_stored() {
+    let app = test_app();
+    for path in [
+        "/static/app.js",
+        "/static/editor-controller.js",
+        "/static/api.js",
+        "/static/app.css",
+        "/static/library.js",
+        "/static/admin.js",
+        "/static/generated.js",
+    ] {
+        for suffix in ["", "?v=20260921-cache-fix"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("{path}{suffix}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()["cache-control"], "no-store");
+            if path == "/static/app.js" {
+                let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                let text = String::from_utf8_lossy(&body);
+                assert!(text.contains("./editor-controller.js?v=20260921-cache-fix"));
+                assert!(text.contains("./api.js?v=20260921-cache-fix"));
+                assert!(text.contains("psalm_variant"));
+            }
+        }
+    }
+    let (app, cookie, _) = authenticated().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("/static/app.js?v=20260921-cache-fix"));
+    assert!(text.contains("/static/app.css?v=20260921-cache-fix"));
+}
