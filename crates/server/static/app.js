@@ -179,7 +179,7 @@ export function createEditorApp({
   function detailOf(component) {
     switch (component.type) {
       case 'song': return component.song ? `Library v${component.song.version} · ${component.song.slide_count || 1} slides` : 'Song choice needed';
-      case 'psalm': return component.reference || 'Passage needed';
+      case 'psalm': return `${component.reference || 'Passage needed'}${component.psalter === 'scottish1650' ? ' · Scottish Psalter (1650)' : ''}`;
       case 'reading': return component.reference || 'Reference needed';
       case 'call_to_worship': return component.reference || 'Reference needed';
       case 'notices': return `${(component.rows || []).length} notice${(component.rows || []).length === 1 ? '' : 's'}`;
@@ -193,6 +193,7 @@ export function createEditorApp({
     if (component.type === 'song') return Math.max(1, component.song?.slide_count || (component.lyric_slides || []).length);
     if (component.type === 'psalm') return Math.max(1, (component.slide_breaks || []).length);
     if (component.type === 'custom_text_image') return Math.max(1, (component.slides || []).length);
+    if (component.type === 'liturgy_block' && component.key === 'confession' && !(component.text || '').trim()) return 3;
     if (component.type === 'liturgy_block') return Math.max(1, (component.text || '').split(/\n\s*\n/).filter(Boolean).length);
     return 1;
   }
@@ -412,7 +413,12 @@ export function createEditorApp({
         break;
       case 'teaching': renderTeachingFields(fields, component); break;
       case 'liturgy_block':
-        fields.append(textArea('Wording for this service', component.id, 'text', component.text, 'Leave blank to use the current staff-approved liturgy. Separate slides with a blank line.'));
+        fields.append(textArea('Wording for this service', component.id, 'text', component.text, 'Leave blank to use the default liturgy. Separate slides with a blank line.'));
+        if (component.key === 'confession') {
+          const note = doc.createElement('p'); note.className = 'field-note';
+          note.textContent = 'Blank wording produces the three-page confession beginning “Almighty God, Father of our Lord Jesus Christ”, with “All.” on the first page. Lord’s Supper services use the original template slides. Entering wording here replaces all three default pages.';
+          fields.append(note);
+        }
         break;
       case 'custom_text_image': renderSlideBlocks(fields, component.id, 'slides', 'Slide'); break;
     }
@@ -568,9 +574,49 @@ export function createEditorApp({
     }
   }
 
+  const psalmVariants = {"sing_psalms": {"1": ["b"], "9": ["b"], "45": ["b"], "46": ["b", "c"], "48": ["b"], "73": ["b"], "80": ["b"], "92": ["b"], "96": ["b"], "99": ["b"], "134": ["b"], "139": ["b", "c"], "150": ["b"]}, "scottish1650": {"6": ["b"], "25": ["b"], "45": ["b"], "50": ["b"], "67": ["b"], "70": ["b"], "100": ["b"], "102": ["b"], "124": ["b"], "136": ["b"], "143": ["b"], "145": ["b"], "148": ["b"]}};
+
   function renderPsalmFields(fields, component) {
     const inline = doc.createElement('div'); inline.className = 'inline-action';
-    inline.append(textField('Sing Psalms reference', component.id, 'reference', component.reference, 'e.g. Psalm 23:1–6', 'summary'));
+    const psalterLabel = doc.createElement('label'); psalterLabel.textContent = 'Psalter';
+    const psalter = doc.createElement('select'); psalter.dataset.field = 'psalter';
+    for (const [value, title] of [['sing_psalms', 'Sing Psalms'], ['scottish1650', 'Scottish Psalter (1650)']]) {
+      const option = doc.createElement('option'); option.value = value; option.textContent = title; psalter.append(option);
+    }
+    psalter.value = component.psalter || 'sing_psalms';
+    psalter.addEventListener('change', () => {
+      controller.updateComponent(component.id, current => {
+        current.psalter = psalter.value;
+        current.reference = (current.reference || '').replace(/^(Psalm\s+)?(\d{1,3})[a-c]/i, '$1$2').replace(/\s*\([a-c]\)/i, '');
+        current.slide_breaks = [];
+      }, 'loader');
+    });
+    psalterLabel.append(psalter); fields.append(psalterLabel);
+    const variantLabel = doc.createElement('label'); variantLabel.textContent = 'Version';
+    const variant = doc.createElement('select'); variant.dataset.field = 'psalm_variant';
+    const updateVariants = reference => {
+      const number = reference.match(/^(?:Psalm\s+)?(\d{1,3})/i)?.[1];
+      const selected = (reference.match(/^(?:Psalm\s+)?\d{1,3}([a-c])/i)?.[1] || reference.match(/\(([a-c])\)/i)?.[1] || 'a').toLowerCase();
+      const available = ['a', ...(psalmVariants[psalter.value]?.[number] || [])];
+      variant.replaceChildren();
+      for (const value of new Set([...available, selected])) {
+        const option = doc.createElement('option'); option.value = value;
+        option.textContent = `Version ${value.toUpperCase()}${available.includes(value) ? '' : ' (unavailable)'}`;
+        variant.append(option);
+      }
+      variant.value = selected; variant.disabled = !number;
+    };
+    updateVariants(component.reference || '');
+    variant.addEventListener('change', () => {
+      controller.updateComponent(component.id, current => {
+        current.reference = (current.reference || '').replace(/\s*\([a-c]\)/i, '').replace(/^(Psalm\s+)?(\d{1,3})[a-c]?/i, `$1$2${variant.value.toUpperCase()}`);
+        current.slide_breaks = [];
+      }, 'loader');
+    });
+    variantLabel.append(variant); fields.append(variantLabel);
+    const referenceField = textField('Psalm reference', component.id, 'reference', component.reference, 'e.g. Psalm 99:1–9', 'summary');
+    referenceField.querySelector('input').addEventListener('input', event => updateVariants(event.target.value));
+    inline.append(referenceField);
     const verseNumbers = doc.createElement('label');
     verseNumbers.className = 'checkbox-field';
     verseNumbers.textContent = 'Show verse numbers';
@@ -599,14 +645,20 @@ export function createEditorApp({
       void controller.loadPsalm(componentId, reference);
     });
     prefetchOnIntent(loadButton, () => {
-      const reference = controller.findComponent(componentId)?.reference || '';
+      const current = controller.findComponent(componentId);
+      const reference = current?.reference || '';
       return /\d/.test(reference)
-        ? `/api/psalm?reference=${encodeURIComponent(reference)}`
+        ? `/api/psalm?reference=${encodeURIComponent(reference)}${current?.psalter === 'scottish1650' ? '&psalter=scottish1650' : ''}`
         : null;
     });
     inline.append(loadButton, error); fields.append(inline);
     renderSlideBlocks(fields, component.id, 'slide_breaks', 'Psalm slide');
-    const note = doc.createElement('p'); note.className = 'field-note'; note.textContent = 'Loading proposes readable groups from the embedded Sing Psalms text. You can then edit every break before generation.'; fields.append(note);
+    const note = doc.createElement('p'); note.className = 'field-note'; note.textContent = 'Choose a psalter and version, then load its text. Loading proposes readable groups. You can then edit every break before generation.'; fields.append(note);
+    if (component.psalter === 'scottish1650') {
+      const rangeNote = doc.createElement('p'); rangeNote.className = 'field-note';
+      rangeNote.textContent = 'For the 1650 Psalter, ranges and displayed numbers follow the stanzas in the Psalms website, which may differ from Bible verse numbers.';
+      fields.append(rangeNote);
+    }
   }
 
   function renderTeachingFields(fields, component) {

@@ -133,6 +133,7 @@ async fn builds_valid_pptx_from_service_record() {
             text: String::new(),
         },
         ServiceComponent::Psalm {
+            psalter: Default::default(),
             id: "psalm".into(),
             heading: "Psalm".into(),
             reference: "Psalm 1:1-3 (a)".into(),
@@ -209,6 +210,7 @@ async fn generated_psalm_runs_specify_arial_black_for_all_script_ranges() {
         "Alastair",
     );
     service.components = vec![ServiceComponent::Psalm {
+        psalter: Default::default(),
         id: "psalm".into(),
         heading: "Psalm".into(),
         reference: "Psalm 1:1-3 (a)".into(),
@@ -271,6 +273,7 @@ async fn generated_psalm_can_hide_or_retain_leading_verse_numbers() {
         "Alastair",
     );
     service.components = vec![ServiceComponent::Psalm {
+        psalter: Default::default(),
         id: "psalm".into(),
         heading: "Psalm".into(),
         reference: "Psalm 23:1-1".into(),
@@ -369,6 +372,7 @@ async fn generated_content_keeps_template_hierarchy_and_safe_sizing() {
             text: String::new(),
         },
         ServiceComponent::Psalm {
+            psalter: Default::default(),
             id: "psalm".into(),
             heading: "Psalm".into(),
             reference: String::new(),
@@ -536,6 +540,7 @@ async fn blank_psalm_slide_breaks_are_skipped() {
         "Alastair",
     );
     service.components = vec![ServiceComponent::Psalm {
+        psalter: Default::default(),
         id: "psalm".into(),
         heading: "Psalm".into(),
         reference: "Psalm 23:1–6".into(),
@@ -580,6 +585,11 @@ async fn crowded_slides_hide_the_master_logo() {
         .expect("crowded song builds");
     let pres = Presentation::open_bytes(&bytes).expect("generated deck opens");
     assert!(pres.slide_xml(0).unwrap().contains("showMasterSp=\"0\""));
+    for bracket in ["Google Shape;64;p14", "Google Shape;65;p14"] {
+        assert!(pres.slide_xml(0).unwrap().contains(bracket));
+        assert!(!pres.slide_xml(1).unwrap().contains(bracket));
+    }
+    assert!(!pres.slide_xml(0).unwrap().contains("Picture 6"));
     assert!(!pres.slide_xml(1).unwrap().contains("showMasterSp=\"0\""));
 }
 
@@ -839,4 +849,67 @@ async fn lords_supper_manual_liturgy_uses_generic_renderer() {
         .slide_text(0)
         .unwrap()
         .contains("Manual confession text."));
+}
+
+#[test]
+fn psalter_variants_and_ranges_resolve_without_fallback() {
+    use deck_builder::{Psalm, Psalter};
+    let a = Psalm::find("Psalm 99A:1-9").unwrap();
+    let b = Psalm::find("Psalm 99B:1-9").unwrap();
+    assert_ne!(a.stanzas, b.stanzas);
+    assert_eq!(b.stanzas, Psalm::find("Psalm 99:1–9 (B)").unwrap().stanzas);
+    assert!(Psalm::find("Psalm 99C").is_err());
+    assert!(!Psalm::find("Psalm 46C").unwrap().stanzas.is_empty());
+    assert!(!Psalm::find("Psalm 139C").unwrap().stanzas.is_empty());
+    assert!(Psalm::find("Psalm 23:6-1").is_err());
+    assert_eq!(Psalm::find("Psalm 23:1").unwrap().stanzas.len(), 1);
+    assert!(!Psalm::find("Psalm 119:9-16").unwrap().stanzas.is_empty());
+    for psalter in [Psalter::SingPsalms, Psalter::Scottish1650] {
+        for number in 1..=150 {
+            assert!(!Psalm::find_in(&number.to_string(), psalter)
+                .unwrap()
+                .stanzas
+                .is_empty());
+        }
+    }
+    let scottish = Psalm::find_in("Psalm 23", Psalter::Scottish1650).unwrap();
+    assert!(scottish.stanzas[0].contains("my shepherd"));
+    assert_ne!(scottish.stanzas, Psalm::find("Psalm 23").unwrap().stanzas);
+    assert_ne!(
+        Psalm::find_in("100A", Psalter::Scottish1650)
+            .unwrap()
+            .stanzas,
+        Psalm::find_in("100B", Psalter::Scottish1650)
+            .unwrap()
+            .stanzas,
+    );
+}
+
+#[tokio::test]
+async fn scottish_psalter_generates_with_its_own_credits() {
+    let mut service = ServiceRecord::new(
+        "scottish",
+        "Scottish psalm",
+        NaiveDate::from_ymd_opt(2026, 9, 21).unwrap(),
+        ServicePreset::Am,
+        "Alastair",
+    );
+    service.components = vec![ServiceComponent::Psalm {
+        psalter: deck_builder::Psalter::Scottish1650,
+        id: "psalm".into(),
+        heading: "Psalm".into(),
+        reference: "Psalm 23:1-2".into(),
+        show_verse_numbers: true,
+        tune: None,
+        slide_breaks: vec![],
+    }];
+    let bytes = build_deck(&service, &MockSources, "522221").await.unwrap();
+    let pres = Presentation::open_bytes(&bytes).unwrap();
+    let text = (0..pres.slide_count())
+        .map(|i| pres.slide_text(i).unwrap())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(text.contains("my shepherd"));
+    assert!(text.contains("Scottish Psalter (1650)"));
+    assert!(!text.contains("Sing Psalms!"));
 }

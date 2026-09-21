@@ -235,6 +235,10 @@ impl Sources for ServiceSources {
         self.upstream.psalm(reference)
     }
 
+    fn psalm_in(&self, reference: &str, psalter: deck_builder::Psalter) -> anyhow::Result<Psalm> {
+        self.upstream.psalm_in(reference, psalter)
+    }
+
     fn teaching(&self, source: TeachingSource, selection: &str) -> anyhow::Result<Teaching> {
         self.upstream.teaching(source, selection)
     }
@@ -621,6 +625,8 @@ async fn fetch_scripture(
 #[derive(Deserialize)]
 struct PsalmQuery {
     reference: String,
+    #[serde(default)]
+    psalter: deck_builder::Psalter,
 }
 
 async fn fetch_psalm(
@@ -633,7 +639,7 @@ async fn fetch_psalm(
     }
     let psalm = state
         .sources
-        .psalm(reference)
+        .psalm_in(reference, query.psalter)
         .map_err(|error| AppError::bad_request(error.to_string()))?;
     Ok(Json(json!({
         "reference": psalm.title,

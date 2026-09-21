@@ -194,3 +194,22 @@ describe('editor loaders', () => {
     expect(service.components[0].text).toBe('What is the chief end of man?\n\nTo glorify God, and to enjoy him forever.');
   });
 });
+
+describe('psalter selection', () => {
+  it('requests the Scottish Psalter and ignores an old psalter response', async () => {
+    const service = makeService();
+    const psalm = service.components.find(component => component.id === 'psalm-1');
+    psalm.psalter = 'scottish1650';
+    const response = deferred();
+    const request = vi.fn(async () => response.promise);
+    const controller = loaderController(request);
+    await controller.loadService(service);
+    const original = [...psalm.slide_breaks];
+    const load = controller.loadPsalm(psalm.id, psalm.reference);
+    expect(request.mock.calls[0][0]).toContain('&psalter=scottish1650');
+    psalm.psalter = 'sing_psalms';
+    response.resolve(jsonResponse({ reference: psalm.reference, meter: 'C.M.', slides: ['Old psalter text'] }));
+    await load;
+    expect(psalm.slide_breaks).toEqual(original);
+  });
+});

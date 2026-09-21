@@ -80,6 +80,13 @@ pub trait Sources: Send + Sync {
         Psalm::find(reference)
     }
 
+    fn psalm_in(&self, reference: &str, psalter: Psalter) -> anyhow::Result<Psalm> {
+        match psalter {
+            Psalter::SingPsalms => self.psalm(reference),
+            Psalter::Scottish1650 => Psalm::find_in(reference, psalter),
+        }
+    }
+
     fn teaching(&self, source: TeachingSource, selection: &str) -> anyhow::Result<Teaching> {
         Teaching::find(source, selection)
     }
@@ -251,6 +258,7 @@ pub async fn build_deck(
                 }
             }
             ServiceComponent::Psalm {
+                psalter,
                 heading,
                 reference,
                 show_verse_numbers,
@@ -259,7 +267,7 @@ pub async fn build_deck(
                 ..
             } => {
                 let (slides, meter) = if !reference.trim().is_empty() {
-                    let psalm = sources.psalm(reference)?;
+                    let psalm = sources.psalm_in(reference, *psalter)?;
                     let slides = if slide_breaks.is_empty() {
                         propose_psalm_groups(&psalm.stanzas)
                     } else {
@@ -307,13 +315,17 @@ pub async fn build_deck(
                                 format!("Tune catalogue: {} v{}", pin.entity_id, pin.version)
                             })
                             .unwrap_or_else(|| format!("Meter: {meter}"));
+                        let words_credit = match psalter {
+                            Psalter::SingPsalms => {
+                                "Words: Sing Psalms! © 2003\nFree Church of Scotland"
+                            }
+                            Psalter::Scottish1650 => "Words: Scottish Psalter (1650)",
+                        };
                         set_shape_text(
                             &mut pres,
                             slide,
                             "Psalm Credits",
-                            &format!(
-                                "Words: Sing Psalms! © 2003\nFree Church of Scotland\n{tune_credit}\nCCLI: {ccli_licence_number}"
-                            ),
+                            &format!("{words_credit}\n{tune_credit}\nCCLI: {ccli_licence_number}"),
                         )?;
                     }
                 }
@@ -566,8 +578,8 @@ const PSALM_VERTICAL_SAFETY_PERCENT: u64 = 85;
 const PSALM_HORIZONTAL_SAFETY_PERCENT: u64 = 90;
 
 // Top edge of the TWPC logo on the slide master ("Picture 6"). When body text
-// is estimated to reach this line the slide hides master graphics so the text
-// does not sit on top of the logo.
+// is estimated to reach this line, retain the two top brackets as slide pictures
+// before hiding inherited graphics, removing only the visible logo.
 const LOGO_TOP_Y_EMU: u64 = 6_242_760;
 
 fn hide_logo_when_text_reaches_it(
@@ -579,6 +591,8 @@ fn hide_logo_when_text_reaches_it(
 ) -> anyhow::Result<()> {
     let (_, shape_y, shape_width, _) = pres.slide_mut(slide)?.shape(shape_name)?.position()?;
     if shape_y + estimated_runs_height_emu(runs, shape_width, default_font_size) > LOGO_TOP_Y_EMU {
+        pres.copy_master_picture(slide, "Google Shape;64;p14")?;
+        pres.copy_master_picture(slide, "Google Shape;65;p14")?;
         pres.slide_mut(slide)?.hide_master_graphics()?;
     }
     Ok(())
@@ -649,8 +663,12 @@ fn estimated_psalm_lines(text: &str, characters_per_line: usize) -> usize {
 
 impl Psalm {
     pub fn find(reference: &str) -> anyhow::Result<Self> {
+        Self::find_in(reference, Psalter::SingPsalms)
+    }
+
+    pub fn find_in(reference: &str, psalter: Psalter) -> anyhow::Result<Self> {
         static RE: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(r"(?i)^(?:Psalm\s+)?(\d{1,3})(?::([1-9]\d{0,2})-([1-9]\d{0,2}))?(?:\s\(([a-z])\))?(?:\s\((\d{1,2})\))?$")
+            Regex::new(r"(?i)^(?:Psalm\s+)?(\d{1,3})([a-c])?(?::([1-9]\d{0,2})(?:-([1-9]\d{0,2}))?)?(?:\s\(([a-c])\))?(?:\s\((\d{1,2})\))?$")
                 .expect("valid psalm reference regex")
         });
 
@@ -662,28 +680,45 @@ impl Psalm {
             .captures(&reference)
             .ok_or_else(|| anyhow!("invalid psalm reference: {reference}"))?;
         let number = caps.get(1).expect("psalm number").as_str();
-        let version = caps.get(4).map(|m| m.as_str()).unwrap_or("a");
-        let section = caps.get(5).map(|m| m.as_str());
-        let start = caps
+        let version = caps
             .get(2)
+            .or_else(|| caps.get(5))
+            .map(|m| m.as_str())
+            .unwrap_or("a")
+            .to_ascii_lowercase();
+        let section = caps.get(6).map(|m| m.as_str());
+        let start = caps
+            .get(3)
             .and_then(|m| m.as_str().parse::<u16>().ok())
             .unwrap_or(1);
         let end = caps
-            .get(3)
+            .get(4)
             .and_then(|m| m.as_str().parse::<u16>().ok())
-            .unwrap_or(300);
-
-        let entry = PSALMS
+            .unwrap_or(if caps.get(3).is_some() { start } else { 300 });
+        if start > end {
+            return Err(anyhow!("psalm verse range is reversed: {reference}"));
+        }
+        let entries = match psalter {
+            Psalter::SingPsalms => &*PSALMS,
+            Psalter::Scottish1650 => &*SCOTTISH_PSALMS,
+        };
+        let matching = entries
             .iter()
-            .find(|entry| {
+            .filter(|entry| {
                 entry.psalm == number
-                    && section
-                        .map(|wanted| entry.content.section == wanted)
-                        .unwrap_or(entry.content.version == version)
+                    && entry.content.version == version
+                    && section.is_none_or(|wanted| entry.content.section == wanted)
             })
+            .collect::<Vec<_>>();
+        let entry = matching
+            .first()
             .ok_or_else(|| anyhow!("psalm not found: {reference}"))?;
         let stanzas = (start..=end)
-            .filter_map(|verse| entry.content.body.get(&verse.to_string()))
+            .filter_map(|verse| {
+                matching
+                    .iter()
+                    .find_map(|entry| entry.content.body.get(&verse.to_string()))
+            })
             .map(|text| textproc::psalm_superscripts(text))
             .collect::<Vec<_>>();
         if stanzas.is_empty() {
@@ -1209,6 +1244,11 @@ struct ComponentEntry {
     content: serde_json::Value,
 }
 
+static SCOTTISH_PSALMS: Lazy<Vec<PsalmEntry>> = Lazy::new(|| {
+    serde_json::from_str(include_str!("../assets/scottish-psalms.json"))
+        .expect("valid Scottish Psalter")
+});
+
 static PSALMS: Lazy<Vec<PsalmEntry>> = Lazy::new(|| {
     serde_json::from_str(include_str!("../assets/psalms.json")).expect("valid embedded psalms.json")
 });
@@ -1360,6 +1400,7 @@ mod tests {
             component,
             ServiceComponent::Psalm {
                 show_verse_numbers: true,
+                psalter: Psalter::SingPsalms,
                 ..
             }
         ));

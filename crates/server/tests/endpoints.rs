@@ -1193,3 +1193,31 @@ async fn private_pages_and_sessions_are_not_cacheable() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(response.headers()["cache-control"], "private, no-store");
 }
+
+#[tokio::test]
+async fn psalm_api_selects_psalter_and_variant() {
+    let (app, cookie, _) = authenticated().await;
+    for (reference, psalter, expected) in [
+        ("23", "scottish1650", "my shepherd"),
+        ("99B", "sing_psalms", ""),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/psalm?reference={reference}&psalter={psalter}"
+                    ))
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let data: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(!data["slides"].as_array().unwrap().is_empty());
+        assert!(data["slides"].to_string().contains(expected));
+    }
+}

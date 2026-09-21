@@ -877,3 +877,64 @@ fn replace_xml_id(tag: &str, id: u32) -> String {
         .replace(tag, format!(r#" id="{id}""#))
         .into_owned()
 }
+
+#[test]
+fn copied_master_brackets_keep_their_images_and_unique_shape_ids() {
+    let mut pres = Presentation::open_bytes(TEMPLATE).unwrap();
+    for name in ["Google Shape;64;p14", "Google Shape;65;p14"] {
+        pres.copy_master_picture(16, name).unwrap();
+    }
+    pres.slide_mut(16).unwrap().hide_master_graphics().unwrap();
+    let xml = pres.slide_xml(16).unwrap();
+    let shape_ids = Regex::new(r#"<p:cNvPr\b[^>]*\bid="(\d+)""#).unwrap();
+    let ids: Vec<_> = shape_ids
+        .captures_iter(&xml)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert_eq!(ids.len(), ids.iter().collect::<HashSet<_>>().len());
+    pres.validate().unwrap();
+    let bytes = pres.save_bytes().unwrap();
+    let mut zip = ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let mut slide_rels = String::new();
+    zip.by_name("ppt/slides/_rels/slide17.xml.rels")
+        .unwrap()
+        .read_to_string(&mut slide_rels)
+        .unwrap();
+    let mut master_rels = String::new();
+    zip.by_name("ppt/slideMasters/_rels/slideMaster1.xml.rels")
+        .unwrap()
+        .read_to_string(&mut master_rels)
+        .unwrap();
+    let mut master = String::new();
+    zip.by_name("ppt/slideMasters/slideMaster1.xml")
+        .unwrap()
+        .read_to_string(&mut master)
+        .unwrap();
+    let pics = Regex::new(r"(?s)<p:pic>.*?</p:pic>").unwrap();
+    let embeds = Regex::new(r#"r:embed="([^"]+)""#).unwrap();
+    let relationships = Regex::new(r"<Relationship\b[^>]*/>").unwrap();
+    for name in ["Google Shape;64;p14", "Google Shape;65;p14"] {
+        let copied = pics
+            .find_iter(&xml)
+            .find(|p| p.as_str().contains(name))
+            .unwrap();
+        let original = pics
+            .find_iter(&master)
+            .find(|p| p.as_str().contains(name))
+            .unwrap();
+        let copied_id = &embeds.captures(copied.as_str()).unwrap()[1];
+        let original_id = &embeds.captures(original.as_str()).unwrap()[1];
+        let target = |rels: &str, id: &str| {
+            relationships
+                .find_iter(rels)
+                .find(|r| xml_attr(r.as_str(), "Id").as_deref() == Some(id))
+                .and_then(|r| xml_attr(r.as_str(), "Target"))
+                .unwrap()
+        };
+        assert_eq!(
+            target(&slide_rels, copied_id),
+            target(&master_rels, original_id)
+        );
+        assert_ne!(copied_id, original_id);
+    }
+}

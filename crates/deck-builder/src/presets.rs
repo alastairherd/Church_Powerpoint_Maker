@@ -62,6 +62,7 @@ impl ComponentSeed {
                 credits: String::new(),
             },
             Self::Psalm => ServiceComponent::Psalm {
+                psalter: Default::default(),
                 id,
                 heading: "Psalm".into(),
                 reference: String::new(),

@@ -802,6 +802,102 @@ impl Presentation {
         self.add_slide_to_presentation(part)
     }
 
+    /// Materialise a master picture on a slide before hiding inherited graphics.
+    /// Image relationships are relative to their owner, so both IDs and targets
+    /// must be rewritten when copying from a master to a slide.
+    pub fn copy_master_picture(&mut self, slide: usize, name: &str) -> Result<()> {
+        let part = self
+            .slides
+            .get(slide)
+            .ok_or(Error::SlideIndex(slide))?
+            .part
+            .clone();
+        let pictures = Regex::new(r"(?s)<p:pic>.*?</p:pic>").expect("valid picture regex");
+        let properties = Regex::new(r"<p:cNvPr\b[^>]*/?>").expect("valid properties regex");
+        let mut found = None;
+        for master in self.reachable_slide_masters(&part)? {
+            let xml = self.part_string(&master)?;
+            for picture in pictures.find_iter(&xml) {
+                if properties
+                    .find(picture.as_str())
+                    .and_then(|p| attr(p.as_str(), "name"))
+                    .as_deref()
+                    == Some(name)
+                {
+                    found = Some((master.clone(), picture.as_str().to_string()));
+                    break;
+                }
+            }
+        }
+        let (master, mut picture) = found
+            .ok_or_else(|| Error::InvalidPackage(format!("master picture {name} not found")))?;
+        let mut xml = self.part_string(&part)?;
+        let next_id = properties
+            .find_iter(&xml)
+            .filter_map(|p| attr(p.as_str(), "id").and_then(|id| id.parse::<u32>().ok()))
+            .max()
+            .unwrap_or(1)
+            + 1;
+        let original = properties
+            .find(&picture)
+            .expect("picture properties")
+            .as_str();
+        picture = picture.replacen(
+            original,
+            &replace_xml_attr(original, "id", &next_id.to_string()),
+            1,
+        );
+        let rels_part = relationships_part(&part);
+        let mut rels = self.part_string(&rels_part)?;
+        let master_rels = self.part_string(&relationships_part(&master))?;
+        let references =
+            Regex::new(r#"r:(?:embed|link|id)="([^"]+)""#).expect("valid reference regex");
+        let ids: HashSet<String> = references
+            .captures_iter(&picture)
+            .map(|c| c[1].to_string())
+            .collect();
+        for id in ids {
+            let relationship = relationship_tags(&master_rels)
+                .into_iter()
+                .find(|r| attr(r, "Id").as_deref() == Some(&id))
+                .ok_or_else(|| {
+                    Error::InvalidPackage(format!("master picture relationship {id} missing"))
+                })?;
+            let mut next = 1;
+            let new_id = loop {
+                let candidate = format!("rIdMasterPicture{next}");
+                if !relationship_tags(&rels)
+                    .iter()
+                    .any(|r| attr(r, "Id").as_deref() == Some(&candidate))
+                {
+                    break candidate;
+                }
+                next += 1;
+            };
+            let mut copied = replace_xml_attr(&relationship, "Id", &new_id);
+            if attr(&relationship, "TargetMode").as_deref() != Some("External") {
+                let target = attr(&relationship, "Target")
+                    .ok_or_else(|| Error::InvalidPackage("picture target missing".into()))?;
+                let target = resolve_part_target(&master, &target)?;
+                copied = replace_xml_attr(&copied, "Target", &relative_part_target(&part, &target));
+            }
+            insert_before(&mut rels, "</Relationships>", &copied)?;
+            picture = references
+                .replace_all(&picture, |caps: &regex::Captures<'_>| {
+                    if caps[1] == id {
+                        caps[0].replace(&format!("\"{id}\""), &format!("\"{new_id}\""))
+                    } else {
+                        caps[0].to_string()
+                    }
+                })
+                .into_owned();
+        }
+        insert_before(&mut xml, "</p:spTree>", &picture)?;
+        self.files.insert(part, xml.into_bytes());
+        self.files.insert(rels_part, rels.into_bytes());
+        Ok(())
+    }
+
     pub fn copy_shape(
         &mut self,
         source_slide: usize,

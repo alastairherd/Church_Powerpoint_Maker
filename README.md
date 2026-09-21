@@ -11,6 +11,17 @@ confession, the assurance of forgiveness, the Lord's Prayer, the creed — is fi
 in automatically. Pressing Generate produces a `.pptx` built from the
 TWPC-branded template, ready to open and project.
 
+Psalm selections support **Sing Psalms** and the **Scottish Psalter (1650)**.
+Enter the psalm number and range, choose an available A/B/C version, then select
+**Load Psalm text**. References such as `Psalm 99B:1–9` also work. Changing the
+psalter or version clears the previously loaded text. The 1650 source uses
+stanza numbers for ranges; these can differ from Bible verse numbers.
+
+Leaving Confession wording blank produces its three default pages, beginning
+“Almighty God, Father of our Lord Jesus Christ”. Ordinary services render the
+embedded wording; Lord’s Supper services preserve the original template slides.
+Custom wording replaces the default pages, with a blank line between slides.
+
 ## Editor and generation behaviour
 
 The editor autosaves without rebuilding the whole page on every keystroke. Counts

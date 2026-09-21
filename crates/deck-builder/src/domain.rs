@@ -215,6 +215,8 @@ pub enum ServiceComponent {
         credits: String,
     },
     Psalm {
+        #[serde(default)]
+        psalter: Psalter,
         id: String,
         heading: String,
         reference: String,
@@ -304,6 +306,11 @@ impl ServiceComponent {
                 .unwrap_or(lyric_slides.len())
                 .max(1),
             Self::Psalm { slide_breaks, .. } => slide_breaks.len().max(1),
+            Self::LiturgyBlock { key, text, .. }
+                if key == "confession" && text.trim().is_empty() =>
+            {
+                3
+            }
             Self::LiturgyBlock { text, .. } => text.split("\n\n").count().max(1),
             Self::CustomTextImage { slides, .. } => slides.len().max(1),
             _ => 1,
@@ -419,4 +426,12 @@ impl Default for GlobalSettingsVersion {
             created_by: "system".to_string(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Psalter {
+    #[default]
+    SingPsalms,
+    Scottish1650,
 }

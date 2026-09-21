@@ -7,6 +7,27 @@ describe('editor render boundaries', () => {
     installBuilderDom(document);
   });
 
+  it('selects available psalm variants and clears text when changing psalter', async () => {
+    const service = makeService();
+    const psalm = service.components.find(component => component.id === 'psalm-1');
+    psalm.reference = 'Psalm 99:1–9';
+    const app = createEditorApp({ document, request: async () => jsonResponse(service),
+      timers: { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn(), setInterval: vi.fn(), clearInterval: vi.fn() } });
+    await app.loadService(service);
+    document.querySelector('[data-id="psalm-1"] .component-main').click();
+    let variant = document.querySelector('[data-field="psalm_variant"]');
+    expect([...variant.options].map(option => option.value)).toEqual(['a', 'b']);
+    variant.value = 'b'; variant.dispatchEvent(new Event('change'));
+    expect(psalm.reference).toBe('Psalm 99B:1–9');
+    expect(psalm.slide_breaks).toEqual([]);
+    const psalter = document.querySelector('[data-field="psalter"]');
+    psalter.value = 'scottish1650'; psalter.dispatchEvent(new Event('change'));
+    expect(psalm.psalter).toBe('scottish1650');
+    expect(psalm.reference).toBe('Psalm 99:1–9');
+    variant = document.querySelector('[data-field="psalm_variant"]');
+    expect([...variant.options].map(option => option.value)).toEqual(['a']);
+  });
+
   it('keeps the Reading field and component list nodes stable while typing', async () => {
     const service = makeService();
     const app = createEditorApp({
@@ -513,7 +534,7 @@ describe('editor render boundaries', () => {
     document.querySelector(`[data-id="${duplicateId}"] [aria-label^="Remove"]`).click();
     expect(app.controller().getState().selectedId).toBe('psalm-1');
     expect(document.querySelector('[data-id="psalm-1"]').classList.contains('selected')).toBe(true);
-    expect(document.getElementById('editor-panel').textContent).toContain('Sing Psalms reference');
+    expect(document.getElementById('editor-panel').textContent).toContain('Psalm reference');
   });
 
   it('marks song and psalm order items with their type class for highlighting', async () => {

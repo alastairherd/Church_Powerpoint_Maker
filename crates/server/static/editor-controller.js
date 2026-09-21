@@ -144,9 +144,12 @@ export function createEditorController({
   }
 
   function loadPsalm(componentId, reference) {
-    return runLoader('psalm', componentId, reference, `/api/psalm?reference=${encodeURIComponent(reference)}`, parsePsalm, (component, data) => {
+    const psalter = findComponent(componentId)?.psalter || 'sing_psalms';
+    const selection = `${psalter}:${reference}`;
+    const suffix = psalter === 'scottish1650' ? '&psalter=scottish1650' : '';
+    return runLoader('psalm', componentId, selection, `/api/psalm?reference=${encodeURIComponent(reference)}${suffix}`, parsePsalm, (component, data) => {
       component.slide_breaks = data.slides;
-    });
+    }, null, component => `${component.psalter || 'sing_psalms'}:${component.reference}`);
   }
 
   function loadEsv(componentId, reference) {
