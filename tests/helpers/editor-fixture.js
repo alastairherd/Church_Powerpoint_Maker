@@ -69,7 +69,8 @@ export function installBuilderDom(document) {
       <button id="review-service"></button>
       <button id="generate-service">Generate PowerPoint</button>
       <button id="review-generate">Generate PowerPoint</button>
-      <button id="add-component"></button>
+      <select id="new-component-type"><option value="">Choose a component type…</option></select>
+      <button id="add-component" disabled></button>
       <button id="sign-out"></button>
       <button id="save-now"></button>
       <div id="save-state" aria-live="polite"><span></span></div>

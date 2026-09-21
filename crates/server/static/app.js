@@ -108,7 +108,7 @@ export function createEditorApp({
     'save-now',
     'new-dialog', 'preset-choices', 'review-dialog', 'review-title', 'full-review', 'toast',
     'new-service', 'create-service', 'review-service', 'generate-service', 'review-generate',
-    'add-component', 'sign-out',
+    'add-component', 'new-component-type', 'sign-out',
   ].map(id => [id, doc.getElementById(id)]));
   let presets = [];
   let controller;
@@ -947,8 +947,36 @@ export function createEditorApp({
     ui['generate-service']?.addEventListener('click', generate);
     ui['review-generate']?.addEventListener('click', event => { event.preventDefault(); generate(); });
     ui['save-now']?.addEventListener('click', () => controller.saveNow().catch(() => {}));
+    const componentChoices = [
+      ['psalm', 'Psalm', { reference: '', psalter: 'sing_psalms', show_verse_numbers: true, tune: null, slide_breaks: [] }],
+      ['song', 'Song', { title: 'Choose a song', song: null, lyric_slides: [], credits: '' }],
+      ['reading', 'Bible reading', { reference: '', bible_page: null }],
+      ['call_to_worship', 'Call to Worship', { reference: '', text: '', external_source_failed: false }],
+      ['cue_prayer', 'Prayer or cue', { cue: '', text: '' }],
+      ['notices', 'Notices', { rows: [] }],
+      ['teaching', 'Catechism or confession reading', { source: 'westminster_shorter_catechism', selection: '', text: '' }],
+      ['welcome', 'Welcome', {}],
+      ['custom_text_image', 'Custom slides', { slides: [''], image: null }],
+      ...[
+        ['confession', 'Confession'], ['assurance', 'Assurance of forgiveness'],
+        ['lords_prayer', 'Lord’s Prayer'], ['apostles_creed', 'Apostles’ Creed'],
+        ['the_grace', 'The Grace'], ['comfortable_words', 'Comfortable Words'],
+        ['humble_access', 'Prayer of Humble Access'], ['consecration', 'Consecration'],
+      ].map(([key, label]) => ['liturgy_block', label, { key, version: null, text: '' }]),
+    ];
+    const picker = ui['new-component-type'];
+    componentChoices.forEach(([type, label, defaults]) => {
+      const option = doc.createElement('option');
+      option.value = defaults.key || type; option.textContent = label;
+      picker?.append(option);
+    });
+    picker?.addEventListener('change', () => { ui['add-component'].disabled = !picker.value; });
     ui['add-component']?.addEventListener('click', () => {
-      const component = { type: 'custom_text_image', id: `component-${Date.now().toString(36)}`, heading: 'Custom slide', slides: [''], image: null };
+      if (!controller.getService()) { showToast('Create or open a service first.'); return; }
+      const choice = componentChoices.find(([type, , defaults]) => (defaults.key || type) === picker?.value);
+      if (!choice) return;
+      const [type, label, defaults] = choice;
+      const component = { type, id: `component-${globalThis.crypto.randomUUID()}`, heading: label, ...structuredClone(defaults) };
       controller.selectComponent(component.id);
       controller.updateService(service => { service.components.push(component); }, 'structural');
     });

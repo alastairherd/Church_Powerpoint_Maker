@@ -278,6 +278,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--focus); outline:
 .component-actions { display: flex; }
 .component-actions .icon-button { width: 27px; height: 27px; color: #667383; font-size: 14px; }
 
+.component-type-picker { display: grid; gap: 6px; margin-top: 16px; }
+.add-component:disabled { opacity: .5; cursor: not-allowed; }
 .add-component {
   width: 100%;
   min-height: 42px;

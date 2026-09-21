@@ -172,6 +172,9 @@ async fn authenticated_navigation_renders_distinct_workspaces() {
         assert_eq!(response.status(), StatusCode::OK, "{path}");
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains(marker), "{path}");
+        if path == "/" {
+            assert!(String::from_utf8_lossy(&body).contains("id=\"new-component-type\""));
+        }
     }
 
     let psalm = app

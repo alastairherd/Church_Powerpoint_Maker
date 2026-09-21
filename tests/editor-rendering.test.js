@@ -500,6 +500,66 @@ describe('editor render boundaries', () => {
     expect(editor.scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
   });
 
+  it('adds a Psalm with working psalter, variant, load and save controls', async () => {
+    let service = makeService();
+    const request = vi.fn(async (url, options = {}) => {
+      if (url === '/api/presets') return jsonResponse([]);
+      if (url === '/api/services') return jsonResponse([service]);
+      if (url.startsWith('/api/psalm?')) return jsonResponse({ reference: 'Psalm 99', slides: ['Selected psalm words'], meter: 'C.M.' });
+      if (options.method === 'PUT') return jsonResponse(service);
+      return jsonResponse(service);
+    });
+    const app = createEditorApp({ document, request,
+      timers: { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn(), setInterval: vi.fn(), clearInterval: vi.fn() } });
+    app.boot();
+    await vi.waitFor(() => expect(app.controller().getService()).toEqual(service));
+    service = app.controller().getService();
+    const picker = document.getElementById('new-component-type');
+    picker.value = 'psalm'; picker.dispatchEvent(new Event('change'));
+    document.getElementById('add-component').click();
+    const psalm = service.components.at(-1);
+    expect(psalm.type).toBe('psalm');
+    expect(app.controller().getState().selectedId).toBe(psalm.id);
+    let reference = document.querySelector('[data-field="reference"]');
+    reference.value = 'Psalm 99:1–9'; reference.dispatchEvent(new Event('input'));
+    let variant = document.querySelector('[data-field="psalm_variant"]');
+    expect([...variant.options].map(option => option.value)).toEqual(['a', 'b']);
+    variant.value = 'b'; variant.dispatchEvent(new Event('change'));
+    document.querySelector('[data-loader-kind="psalm"]').click();
+    await vi.waitFor(() => expect(psalm.slide_breaks).toEqual(['Selected psalm words']));
+    expect(request.mock.calls.some(([url]) => url.includes(encodeURIComponent('Psalm 99B:1–9')))).toBe(true);
+    const psalter = document.querySelector('[data-field="psalter"]');
+    psalter.value = 'scottish1650'; psalter.dispatchEvent(new Event('change'));
+    document.querySelector('[data-loader-kind="psalm"]').click();
+    await vi.waitFor(() => expect(psalm.slide_breaks).toEqual(['Selected psalm words']));
+    expect(request.mock.calls.some(([url]) => url.includes('&psalter=scottish1650'))).toBe(true);
+    await app.controller().saveNow();
+    const saved = request.mock.calls.find(([, options]) => options?.method === 'PUT');
+    expect(JSON.parse(saved[1].body).components.at(-1)).toMatchObject({ type: 'psalm', psalter: 'scottish1650', reference: 'Psalm 99:1–9' });
+  });
+
+  it('adds each offered component type with an independent editor', async () => {
+    let service = makeService();
+    const app = createEditorApp({ document,
+      request: async url => jsonResponse(url === '/api/services' ? [service] : []),
+      timers: { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn(), setInterval: vi.fn(), clearInterval: vi.fn() } });
+    app.boot();
+    await vi.waitFor(() => expect(app.controller().getService()).toEqual(service));
+    service = app.controller().getService();
+    const picker = document.getElementById('new-component-type');
+    for (const option of [...picker.options].filter(option => option.value)) {
+      picker.value = option.value; picker.dispatchEvent(new Event('change'));
+      const before = service.components.length;
+      document.getElementById('add-component').click();
+      expect(service.components).toHaveLength(before + 1);
+      const added = service.components.at(-1);
+      expect(added.key || added.type).toBe(option.value);
+      expect(app.controller().getState().selectedId).toBe(added.id);
+      expect(document.querySelector('.component-item.selected').dataset.type).toBe(added.type);
+    }
+    expect(new Set(service.components.map(component => component.id)).size).toBe(service.components.length);
+  });
+
   it('selects a newly added component before its single structural render', async () => {
     const service = makeService();
     const app = createEditorApp({
@@ -512,6 +572,10 @@ describe('editor render boundaries', () => {
     app.boot();
     await app.loadService(service);
 
+    const picker = document.getElementById('new-component-type');
+    expect(document.getElementById('add-component').disabled).toBe(true);
+    picker.value = 'custom_text_image';
+    picker.dispatchEvent(new Event('change'));
     document.getElementById('add-component').click();
 
     const selected = document.querySelector('.component-item.selected');
