@@ -946,7 +946,18 @@ export function createEditorApp({
     ui['review-service']?.addEventListener('click', openReview);
     ui['generate-service']?.addEventListener('click', generate);
     ui['review-generate']?.addEventListener('click', event => { event.preventDefault(); generate(); });
-    ui['save-now']?.addEventListener('click', () => controller.saveNow().catch(() => {}));
+    ui['save-now']?.addEventListener('click', async () => {
+      if (!controller.getService()) { showToast('Create or open a service first.'); return; }
+      ui['save-now'].disabled = true;
+      try {
+        await controller.saveNow();
+        showToast('Service order saved. Reopen it from Previous PowerPoints.');
+      } catch {
+        // The save controller displays the failure and keeps the unsaved edits.
+      } finally {
+        ui['save-now'].disabled = false;
+      }
+    });
     const componentChoices = [
       ['psalm', 'Psalm', { reference: '', psalter: 'sing_psalms', show_verse_numbers: true, tune: null, slide_breaks: [] }],
       ['song', 'Song', { title: 'Choose a song', song: null, lyric_slides: [], credits: '' }],

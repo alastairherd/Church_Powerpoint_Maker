@@ -34,13 +34,15 @@ const SNAPSHOT = {
 async function bootPage(handlers) {
   document.head.innerHTML = '<meta name="csrf-token" content="test-csrf">';
   document.body.innerHTML = `
-    <div id="generated-results"></div>
+    <div id="saved-orders-results" aria-busy="true"></div>
+    <p id="saved-orders-count"></p>
+    <div id="generated-results" aria-busy="true"></div>
     <p id="generated-count"></p>
     <button class="sign-out"></button>
     <div id="toast"></div>
   `;
   global.fetch = vi.fn(async (url, options) => {
-    const handler = handlers[url] || handlers.default;
+    const handler = handlers[url] || (url === '/api/services' ? () => ({ ok: true, json: async () => [] }) : handlers.default);
     if (!handler) throw new Error(`unexpected request to ${url}`);
     return handler(options);
   });
@@ -48,7 +50,10 @@ async function bootPage(handlers) {
   globalThis.URL.revokeObjectURL = vi.fn();
   vi.resetModules();
   await import('../crates/server/static/generated.js');
-  await vi.waitFor(() => expect(document.querySelectorAll('.generated-row').length).toBe(1));
+  await vi.waitFor(() => {
+    expect(document.getElementById('generated-results').getAttribute('aria-busy')).toBe('false');
+    expect(document.getElementById('saved-orders-results').getAttribute('aria-busy')).toBe('false');
+  });
 }
 
 const listingOk = () => ({ ok: true, json: async () => [RECORD] });
@@ -187,5 +192,53 @@ describe('reusing a generated deck in the builder', () => {
       expect(document.getElementById('toast').textContent).toBe('saved settings are unavailable'));
     expect(restore.disabled).toBe(false);
     expect(restore.textContent).toBe('Use as starting point');
+  });
+});
+
+describe('saved service orders', () => {
+  it('lists unfinished orders with a link to resume the same service and no download', async () => {
+    const draft = { ...SNAPSHOT, id: 'saved order/1', status: 'draft', name: 'Next Sunday', audit: { ...SNAPSHOT.audit, updated_at: '2026-09-21T10:00:00Z' } };
+    await bootPage({
+      '/api/generated': listingOk,
+      '/api/services': () => ({ ok: true, json: async () => [draft, SNAPSHOT, { ...draft, id: 'archived', status: 'archived' }] }),
+    });
+    const rows = document.querySelectorAll('.saved-order-row');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain('Next Sunday');
+    expect(rows[0].textContent).toContain('Draft');
+    const resume = rows[0].querySelector('a');
+    expect(resume.textContent).toBe('Continue editing');
+    expect(new URL(resume.href).searchParams.get('service')).toBe(draft.id);
+    expect(rows[0].textContent).not.toContain('Download PowerPoint');
+    rows[0].querySelector('button').click();
+    expect(rows[0].querySelector('.snapshot-panel').hidden).toBe(false);
+    expect(rows[0].textContent).toContain('Tell Out My Soul');
+    expect(global.fetch.mock.calls.every(([, options]) => !options.method || options.method === 'GET')).toBe(true);
+    expect(document.getElementById('generated-results').textContent).toContain('Download PowerPoint');
+  });
+
+  it('shows saved orders even when no PowerPoint has ever been generated', async () => {
+    await bootPage({
+      '/api/generated': () => ({ ok: true, json: async () => [] }),
+      '/api/services': () => ({ ok: true, json: async () => [{ ...SNAPSHOT, status: 'draft' }] }),
+    });
+    expect(document.getElementById('saved-orders-count').textContent).toBe('1 saved order');
+    expect(document.querySelector('.saved-order-row a').textContent).toBe('Continue editing');
+    expect(document.getElementById('generated-results').textContent).toContain('No PowerPoints generated yet');
+  });
+
+  it('keeps downloads available if saved orders fail to load and offers a retry', async () => {
+    let attempts = 0;
+    await bootPage({
+      '/api/generated': listingOk,
+      '/api/services': () => ++attempts === 1
+        ? { ok: false, status: 503, json: async () => ({ error: 'Storage unavailable' }) }
+        : { ok: true, json: async () => [] },
+    });
+    expect(button('Download PowerPoint')).toBeDefined();
+    const results = document.getElementById('saved-orders-results');
+    expect(results.textContent).toContain('could not be loaded');
+    results.querySelector('button').click();
+    await vi.waitFor(() => expect(results.textContent).toContain('No unfinished service orders'));
   });
 });

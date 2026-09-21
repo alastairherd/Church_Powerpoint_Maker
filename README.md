@@ -71,7 +71,12 @@ marks the live service complete. The response header `x-deck-preparation` is
 `hit` when prepared bytes were reused and `miss` when a foreground build was
 needed.
 
-From the Generated PowerPoints page, **Use as starting point** restores the
+Use **Save service order** to keep an unfinished order without generating a deck.
+Open **Previous PowerPoints → Saved service orders → Continue editing** to return
+to that same order. Autosaved drafts appear there too. Generated files remain in
+the separate **Generated service decks** section on that page.
+
+From the Previous PowerPoints page, **Use as starting point** restores the
 immutable settings saved with that generated revision into a new draft. It does
 not modify the original service or its generated history.
 

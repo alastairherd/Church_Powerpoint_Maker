@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf }}">
-  <title>Generated PowerPoints · TWPC</title>
+  <title>Previous PowerPoints · TWPC</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css?v=20260921-cache-fix">
 </head>
@@ -18,7 +18,7 @@
       <nav aria-label="Main navigation">
         <a class="nav-link" href="/"><span aria-hidden="true">◫</span> Services</a>
         <a class="nav-link" href="/library"><span aria-hidden="true">♫</span> Song library</a>
-        <a class="nav-link active" href="/generated" aria-current="page"><span aria-hidden="true">▣</span> Generated PowerPoints</a>
+        <a class="nav-link active" href="/generated" aria-current="page"><span aria-hidden="true">▣</span> Previous PowerPoints</a>
         <a class="nav-link" href="/admin"><span aria-hidden="true">⚙</span> Administration</a>
       </nav>
       <div class="sidebar-footer">
@@ -30,8 +30,17 @@
 
     <main class="workspace">
       <header class="topbar">
-        <div><p class="breadcrumbs"><strong>Generated PowerPoints</strong></p><h1>Generated PowerPoints</h1></div>
+        <div><p class="breadcrumbs"><strong>Previous PowerPoints</strong></p><h1>Previous PowerPoints</h1></div>
       </header>
+      <section class="page-content generated-page" aria-labelledby="saved-orders-heading">
+        <div class="page-heading">
+          <div><h2 id="saved-orders-heading">Saved service orders</h2><p>Service orders are saved as you edit. Continue an unfinished order here without generating a PowerPoint.</p></div>
+          <p class="record-count" id="saved-orders-count" aria-live="polite">Loading saved orders…</p>
+        </div>
+        <div id="saved-orders-results" class="generated-results" aria-live="polite" aria-busy="true">
+          <div class="skeleton-row"></div>
+        </div>
+      </section>
       <section class="page-content generated-page" aria-labelledby="generated-heading">
         <div class="page-heading">
           <div><h2 id="generated-heading">Generated service decks</h2><p>Download a retained PowerPoint or use its saved settings as the starting point for a new service.</p></div>

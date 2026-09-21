@@ -62,7 +62,7 @@ export function installBuilderDom(document) {
       <a class="wordmark" href="/">Home</a>
       <a class="nav-link" href="/">Services</a>
        <a class="nav-link" href="/library">Song library</a>
-       <a class="nav-link" href="/generated">Generated PowerPoints</a>
+       <a class="nav-link" href="/generated">Previous PowerPoints</a>
        <a class="nav-link" href="/admin">Administration</a>
       <button id="new-service"></button>
       <button id="create-service"></button>
@@ -72,7 +72,7 @@ export function installBuilderDom(document) {
       <select id="new-component-type"><option value="">Choose a component type…</option></select>
       <button id="add-component" disabled></button>
       <button id="sign-out"></button>
-      <button id="save-now"></button>
+      <button id="save-now">Save service order</button>
       <div id="save-state" aria-live="polite"><span></span></div>
       <p id="save-help" hidden></p>
       <input id="service-name">

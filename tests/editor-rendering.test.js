@@ -7,6 +7,31 @@ describe('editor render boundaries', () => {
     installBuilderDom(document);
   });
 
+  it('saves an unfinished service order without generating a PowerPoint', async () => {
+    const service = makeService();
+    const saving = deferred();
+    const request = vi.fn(async (url, options = {}) => {
+      if (url === '/api/presets') return jsonResponse([]);
+      if (url === '/api/services') return jsonResponse([service]);
+      if (options.method === 'PUT') return saving.promise;
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const app = createEditorApp({ document, request,
+      timers: { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn(), setInterval: vi.fn(), clearInterval: vi.fn() } });
+    app.boot();
+    await vi.waitFor(() => expect(app.controller().getService()?.id).toBe(service.id));
+    const reference = document.querySelector('[data-field="reference"]');
+    reference.value = 'Romans 8:1–11'; reference.dispatchEvent(new Event('input'));
+    const save = document.getElementById('save-now'); save.click();
+    expect(save.disabled).toBe(true);
+    expect(request.mock.calls.find(([, options]) => options?.method === 'PUT')[0]).toContain('/autosave');
+    saving.resolve(jsonResponse({ ...service, revision: 5 }));
+    await vi.waitFor(() => expect(save.disabled).toBe(false));
+    expect(document.getElementById('toast').textContent).toContain('Reopen it from Previous PowerPoints');
+    expect(app.controller().isDirty()).toBe(false);
+    expect(request.mock.calls.some(([url]) => url.includes('/generate'))).toBe(false);
+  });
+
   it('selects available psalm variants and clears text when changing psalter', async () => {
     const service = makeService();
     const psalm = service.components.find(component => component.id === 'psalm-1');
@@ -318,6 +343,7 @@ describe('editor render boundaries', () => {
     vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:generated'), revokeObjectURL: vi.fn() });
     const app = createEditorApp({
       document,
+      timers: { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn(), setInterval: vi.fn(), clearInterval: vi.fn() },
       request: async url => {
         if (url === '/api/presets') return jsonResponse([]);
         if (url === '/api/services') return jsonResponse([]);

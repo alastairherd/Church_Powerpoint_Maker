@@ -1275,3 +1275,57 @@ async fn editor_assets_bypass_old_caches_and_cannot_be_stored() {
     assert!(text.contains("/static/app.js?v=20260921-cache-fix"));
     assert!(text.contains("/static/app.css?v=20260921-cache-fix"));
 }
+
+#[tokio::test]
+async fn saved_service_order_can_be_listed_and_reopened_without_generation() {
+    let (app, cookie, csrf) = authenticated().await;
+    let id = create_service(&app, &cookie, &csrf, "Unfinished Sunday order").await;
+    let mut service = get_json(&app, &cookie, &format!("/api/services/{id}")).await;
+    service["components"][0]["heading"] = serde_json::json!("Saved welcome wording");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/services/{id}/autosave"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&service).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let listed = get_json(&app, &cookie, "/api/services").await;
+    let saved = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id)
+        .unwrap();
+    assert_eq!(saved["status"], "draft");
+    assert_eq!(saved["components"][0]["heading"], "Saved welcome wording");
+    let reopened = get_json(&app, &cookie, &format!("/api/services/{id}")).await;
+    assert_eq!(&reopened, saved);
+    assert!(get_json(&app, &cookie, "/api/generated")
+        .await
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let page = app
+        .oneshot(
+            Request::builder()
+                .uri("/generated")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.status(), StatusCode::OK);
+    let body = to_bytes(page.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("Previous PowerPoints"));
+    assert!(text.contains("Saved service orders"));
+}

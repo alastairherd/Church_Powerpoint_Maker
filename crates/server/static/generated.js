@@ -170,7 +170,60 @@ function render(records) {
   });
 }
 
+function renderSavedOrders(services) {
+  const results = document.getElementById('saved-orders-results');
+  const count = document.getElementById('saved-orders-count');
+  const drafts = services.filter(service => service.status === 'draft')
+    .sort((a, b) => b.date.localeCompare(a.date) || b.audit.updated_at.localeCompare(a.audit.updated_at));
+  results.replaceChildren();
+  results.setAttribute('aria-busy', 'false');
+  count.textContent = `${drafts.length} saved order${drafts.length === 1 ? '' : 's'}`;
+  if (!drafts.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-page-state';
+    empty.innerHTML = '<span aria-hidden="true">▤</span><h2>No unfinished service orders</h2><p>Use Save service order in the builder to keep an order for later.</p>';
+    results.append(empty);
+    return;
+  }
+  drafts.forEach(service => {
+    const row = document.createElement('article'); row.className = 'generated-row saved-order-row';
+    const copy = document.createElement('div');
+    const title = document.createElement('h3'); title.textContent = service.name;
+    const badge = document.createElement('span'); badge.className = 'status-badge status-warning'; badge.textContent = 'Draft';
+    const details = document.createElement('p');
+    details.textContent = `${service.date} · ${service.components.length} items · Last saved ${new Date(service.audit.updated_at).toLocaleString()} by ${service.audit.updated_by}`;
+    copy.append(title, badge, details);
+    const actions = document.createElement('div'); actions.className = 'generated-actions';
+    const panel = document.createElement('div'); panel.className = 'snapshot-panel'; panel.hidden = true;
+    const contents = document.createElement('button'); contents.type = 'button'; contents.className = 'button button-secondary';
+    contents.textContent = 'View contents'; contents.setAttribute('aria-expanded', 'false');
+    contents.addEventListener('click', () => {
+      if (panel.hidden) renderSnapshot(service, panel);
+      panel.hidden = !panel.hidden;
+      contents.setAttribute('aria-expanded', String(!panel.hidden));
+      contents.textContent = panel.hidden ? 'View contents' : 'Hide contents';
+    });
+    const resume = document.createElement('a'); resume.className = 'button button-primary';
+    resume.textContent = 'Continue editing'; resume.href = `/?service=${encodeURIComponent(service.id)}`;
+    actions.append(contents, resume); row.append(copy, actions, panel); results.append(row);
+  });
+}
+
+function loadSavedOrders() {
+  request('/api/services').then(response => response.json()).then(renderSavedOrders).catch(error => {
+    const results = document.getElementById('saved-orders-results');
+    results.replaceChildren(); results.setAttribute('aria-busy', 'false');
+    document.getElementById('saved-orders-count').textContent = 'Could not load saved orders';
+    const failure = document.createElement('div'); failure.className = 'empty-page-state error-state';
+    const title = document.createElement('h2'); title.textContent = 'Saved service orders could not be loaded';
+    const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'button button-secondary'; retry.textContent = 'Retry';
+    retry.addEventListener('click', () => { results.setAttribute('aria-busy', 'true'); retry.disabled = true; loadSavedOrders(); });
+    failure.append(title, retry); results.append(failure); showToast(error.message);
+  });
+}
+
 function boot() {
+  loadSavedOrders();
   document.querySelector('.sign-out')?.addEventListener('click', async () => {
     try {
       await request('/api/logout', { method: 'POST' });
