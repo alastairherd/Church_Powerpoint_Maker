@@ -43,7 +43,7 @@ const PREPARED_DECK_BYTE_LIMIT: usize = 64 * 1024 * 1024;
 const PREPARE_QUEUE_LIMIT: usize = 4;
 // The template is embedded in the process. Bump this if a future deployment can swap templates
 // without restarting, so bytes produced under the old template can never be reused.
-const TEMPLATE_GENERATION: u32 = 1;
+const TEMPLATE_GENERATION: u32 = 2;
 
 #[derive(Clone)]
 pub struct AppConfig {

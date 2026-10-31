@@ -306,6 +306,7 @@ impl ServiceComponent {
                 .unwrap_or(lyric_slides.len())
                 .max(1),
             Self::Psalm { slide_breaks, .. } => slide_breaks.len().max(1),
+            Self::LiturgyBlock { key, .. } if key == "doxology" => 1,
             Self::LiturgyBlock { key, text, .. }
                 if key == "confession" && text.trim().is_empty() =>
             {

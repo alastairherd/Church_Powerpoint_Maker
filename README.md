@@ -22,6 +22,13 @@ Leaving Confession wording blank produces its three default pages, beginning
 embedded wording; Lord’s Supper services preserve the original template slides.
 Custom wording replaces the default pages, with a blank line between slides.
 
+For non–Lord's Supper services, select **The Grace** near the end of the order
+and use **Service ending** to choose **The Grace** or **Doxology**. The Grace
+remains the default. Doxology uses the supplied original PowerPoint slide in
+the same position, before refreshments. The choice is autosaved and retained
+when reopening or copying the service. Switching back also restores any custom
+Grace wording. Lord's Supper presets keep their existing Final Blessing.
+
 ## Editor and generation behaviour
 
 The editor autosaves without rebuilding the whole page on every keystroke. Counts

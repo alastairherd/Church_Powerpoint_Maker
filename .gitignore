@@ -2,6 +2,7 @@ target/
 node_modules/
 *.pptx
 !crates/deck-builder/assets/template.pptx
+!crates/deck-builder/assets/doxology.pptx
 example-pptx/
 .env
 .env.local

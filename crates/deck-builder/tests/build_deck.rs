@@ -154,6 +154,13 @@ async fn builds_valid_pptx_from_service_record() {
             lyric_slides: vec!["Amazing grace! how sweet the sound".into()],
             credits: "Words: John Newton · Public Domain".into(),
         },
+        ServiceComponent::LiturgyBlock {
+            id: "ending".into(),
+            heading: "Doxology".into(),
+            key: "doxology".into(),
+            version: None,
+            text: String::new(),
+        },
     ];
 
     let bytes = build_deck(&service, &MockSources, "522221")
@@ -735,6 +742,64 @@ async fn imports_original_song_slides_instead_of_rebuilding_their_text() {
             source.slide_text(index).unwrap(),
             "source slide {index} is preserved"
         );
+    }
+}
+
+#[tokio::test]
+async fn ordinary_service_endings_preserve_grace_or_import_original_doxology() {
+    let doxology = Presentation::open_bytes(include_bytes!("../assets/doxology.pptx"))
+        .expect("supplied Doxology opens");
+    assert_eq!(doxology.slide_count(), 1);
+    let original_text = doxology.slide_text(0).unwrap();
+    for preset in [
+        ServicePreset::Am,
+        ServicePreset::TraditionalPm,
+        ServicePreset::PraiseAndWorshipPm,
+    ] {
+        let mut service = ServiceRecord::new(
+            "closing-choice",
+            "Service ending",
+            NaiveDate::from_ymd_opt(2026, 11, 1).unwrap(),
+            preset,
+            "Alastair",
+        );
+        service.components = service.components.into_iter().rev().take(2).collect();
+        service.components.reverse();
+        let bytes = build_deck(&service, &MockSources, "522221").await.unwrap();
+        let grace = Presentation::open_bytes(&bytes).unwrap();
+        assert_eq!(grace.slide_count(), 2);
+        assert!(grace.slide_text(0).unwrap().contains("The Grace"));
+        assert!(!grace.slide_text(0).unwrap().contains("Praise God"));
+
+        if let ServiceComponent::LiturgyBlock {
+            heading, key, text, ..
+        } = &mut service.components[0]
+        {
+            *heading = "Doxology".into();
+            *key = "doxology".into();
+            // Custom Grace wording is retained by the editor, but must not replace Doxology.
+            *text = "Custom Grace\n\nSecond page".into();
+        } else {
+            panic!("ordinary preset must end with Grace before refreshments");
+        }
+        assert_eq!(service.components[0].estimated_slides(), 1);
+        let bytes = build_deck(&service, &FailingFixedSources, "522221")
+            .await
+            .unwrap();
+        let generated = Presentation::open_bytes(&bytes).unwrap();
+        generated
+            .validate()
+            .expect("imported masters and layouts are valid");
+        assert_eq!(generated.slide_count(), 2);
+        assert_eq!(generated.slide_text(0).unwrap(), original_text);
+        assert_eq!(
+            generated.slide_xml(0).unwrap(),
+            doxology.slide_xml(0).unwrap()
+        );
+        assert!(generated
+            .slide_text(1)
+            .unwrap()
+            .contains("Join us for refreshments"));
     }
 }
 

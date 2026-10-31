@@ -14,6 +14,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 const TEMPLATE: &[u8] = include_bytes!("../assets/template.pptx");
+const DOXOLOGY: &[u8] = include_bytes!("../assets/doxology.pptx");
 const SEED_WELCOME: usize = 0;
 const SEED_NOTICES: usize = 1;
 const SEED_CALL_TO_WORSHIP: usize = 2;
@@ -377,6 +378,11 @@ pub async fn build_deck(
             ServiceComponent::LiturgyBlock {
                 heading, key, text, ..
             } => {
+                if key == "doxology" {
+                    pres.import_slides(DOXOLOGY)
+                        .context("import original Doxology slide")?;
+                    continue;
+                }
                 if text.trim().is_empty() {
                     if let Some(source_slides) = service
                         .preset

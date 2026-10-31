@@ -193,6 +193,7 @@ export function createEditorApp({
     if (component.type === 'song') return Math.max(1, component.song?.slide_count || (component.lyric_slides || []).length);
     if (component.type === 'psalm') return Math.max(1, (component.slide_breaks || []).length);
     if (component.type === 'custom_text_image') return Math.max(1, (component.slides || []).length);
+    if (component.type === 'liturgy_block' && component.key === 'doxology') return 1;
     if (component.type === 'liturgy_block' && component.key === 'confession' && !(component.text || '').trim()) return 3;
     if (component.type === 'liturgy_block') return Math.max(1, (component.text || '').split(/\n\s*\n/).filter(Boolean).length);
     return 1;
@@ -391,12 +392,15 @@ export function createEditorApp({
     const copy = doc.createElement('div');
     const label = doc.createElement('p'); label.className = 'section-label'; label.textContent = componentLabels[component.type];
     const title = doc.createElement('h2'); title.textContent = headingOf(component);
-    const help = doc.createElement('p'); help.textContent = editorHelp(component.type);
+    const help = doc.createElement('p'); help.textContent = component.key === 'doxology'
+      ? 'The supplied Doxology slide is included with its original wording and formatting.'
+      : editorHelp(component.type);
     copy.append(label, title, help); header.append(copy);
     const fields = doc.createElement('div'); fields.className = 'editor-fields'; card.append(header, fields);
     ui['editor-panel'].replaceChildren(card);
 
-    if ('heading' in component) fields.append(textField('Heading', component.id, 'heading', component.heading, '', 'heading'));
+    const isDoxology = component.type === 'liturgy_block' && component.key === 'doxology';
+    if ('heading' in component && !isDoxology) fields.append(textField('Heading', component.id, 'heading', component.heading, '', 'heading'));
     switch (component.type) {
       case 'welcome': break;
       case 'notices': renderNoticeFields(fields, component); break;
@@ -413,6 +417,11 @@ export function createEditorApp({
         break;
       case 'teaching': renderTeachingFields(fields, component); break;
       case 'liturgy_block':
+        if (!['am_lords_supper', 'pm_lords_supper'].includes(service.preset)
+          && ['grace', 'the_grace', 'doxology'].includes(component.key)) {
+          renderServiceEnding(fields, component);
+        }
+        if (isDoxology) break;
         fields.append(textArea('Wording for this service', component.id, 'text', component.text, 'Leave blank to use the default liturgy. Separate slides with a blank line.'));
         if (component.key === 'confession') {
           const note = doc.createElement('p'); note.className = 'field-note';
@@ -440,6 +449,28 @@ export function createEditorApp({
       liturgy_block: 'Blank wording uses the current version. Completed services keep their pinned version.',
       custom_text_image: 'Create one or more TWPC-formatted slides. An image can be added in the library workflow.'
     }[type];
+  }
+
+  function renderServiceEnding(fields, component) {
+    const label = doc.createElement('label'); label.textContent = 'Service ending';
+    const select = doc.createElement('select');
+    select.dataset.componentId = component.id; select.dataset.field = 'service_ending';
+    for (const [value, title] of [['grace', 'The Grace'], ['doxology', 'Doxology']]) {
+      const option = doc.createElement('option'); option.value = value; option.textContent = title; select.append(option);
+    }
+    select.value = component.key === 'doxology' ? 'doxology' : 'grace';
+    select.addEventListener('change', () => {
+      controller.updateComponent(component.id, current => {
+        current.key = select.value;
+        current.heading = select.value === 'doxology' ? 'Doxology' : 'The Grace';
+        // Keep any custom Grace wording so switching back restores it.
+      }, 'loader');
+      ui['editor-panel'].querySelector('[data-field="service_ending"]')?.focus();
+    });
+    label.append(select); fields.append(label);
+    const note = doc.createElement('p'); note.className = 'field-note';
+    note.textContent = 'Choose The Grace or Doxology for this service. The choice is saved with the service order.';
+    fields.append(note);
   }
 
   function renderNoticeFields(fields, component) {

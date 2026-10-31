@@ -7,6 +7,55 @@ describe('editor render boundaries', () => {
     installBuilderDom(document);
   });
 
+  it.each(['am', 'traditional_pm', 'praise_and_worship_pm'])('saves and restores the closing choice for %s without losing Grace wording', async preset => {
+    const closing = { id: 'closing', type: 'liturgy_block', key: 'grace', heading: 'The Grace', version: null, text: 'Custom Grace\n\nSecond page' };
+    const refreshments = { id: 'refreshments', type: 'cue_prayer', heading: 'Join us for refreshments', cue: '', text: '' };
+    const service = makeService({ preset, components: [closing, refreshments] });
+    let saved;
+    const app = createEditorApp({ document, request: async (url, options = {}) => {
+      saved = JSON.parse(options.body);
+      return jsonResponse({ ...saved, revision: saved.revision + 1 });
+    }, timers: { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() } });
+    await app.loadService(service);
+    const list = document.getElementById('component-list');
+    let select = document.querySelector('[data-field="service_ending"]');
+    expect(select.value).toBe('grace');
+    select.value = 'doxology'; select.dispatchEvent(new Event('change'));
+    expect(list.querySelector('[data-id="closing"] strong').textContent).toBe('Doxology');
+    expect(document.getElementById('component-list')).toBe(list);
+    expect(service.components.map(component => component.id)).toEqual(['closing', 'refreshments']);
+    expect(document.querySelector('[data-field="text"]')).toBeNull();
+    app.renderAll();
+    expect(document.getElementById('slide-count').textContent).toBe('2');
+    await app.controller().saveNow();
+    expect(saved.components[0]).toMatchObject({ key: 'doxology', text: closing.text });
+
+    await app.loadService(structuredClone(saved));
+    select = document.querySelector('[data-field="service_ending"]');
+    expect(select.value).toBe('doxology');
+    select.value = 'grace'; select.dispatchEvent(new Event('change'));
+    expect(document.querySelector('[data-field="text"]').value).toBe('Custom Grace\n\nSecond page');
+    expect(document.querySelector('[data-id="closing"] strong').textContent).toBe('The Grace');
+    await app.controller().saveNow();
+    expect(saved.components[0].key).toBe('grace');
+  });
+
+  it('offers the ending choice for Grace added from the component picker', async () => {
+    const service = makeService({ components: [{ id: 'closing', type: 'liturgy_block', key: 'the_grace', heading: 'The Grace', text: '' }] });
+    const app = createEditorApp({ document, request: async () => jsonResponse(service) });
+    await app.loadService(service);
+    expect(document.querySelector('[data-field="service_ending"]').value).toBe('grace');
+  });
+
+  it.each(['am_lords_supper', 'pm_lords_supper'])('keeps the existing blessing for %s', async preset => {
+    const service = makeService({ preset, components: [{ id: 'blessing', type: 'liturgy_block', key: 'final_blessing', heading: 'Final Blessing', text: '' }] });
+    const app = createEditorApp({ document, request: async () => jsonResponse(service) });
+    await app.loadService(service);
+    expect(document.querySelector('[data-field="service_ending"]')).toBeNull();
+    expect(document.querySelector('[data-field="text"]')).not.toBeNull();
+    expect(service.components[0].key).toBe('final_blessing');
+  });
+
   it('saves an unfinished service order without generating a PowerPoint', async () => {
     const service = makeService();
     const saving = deferred();
